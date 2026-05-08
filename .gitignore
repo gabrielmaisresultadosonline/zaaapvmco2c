@@ -4,7 +4,12 @@ node_modules/
 data/history/
 data/archives/
 Public/uploads/
+Public/chat-media/
+Public/wa-media/
 *.log
+.env
 .env.local
 dist/
 .DS_Store
+data/*.json
+data/**/*.json
