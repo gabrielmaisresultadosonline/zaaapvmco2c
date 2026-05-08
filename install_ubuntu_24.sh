@@ -88,6 +88,10 @@ fi
 
 $SUDO -u "$APP_USER" bash -lc "cd '$APP_DIR' && export PUPPETEER_SKIP_DOWNLOAD=1 && npm install --omit=dev"
 
+PERSIST_DIR="${PERSIST_DIR:-$APP_DIR-persist}"
+$SUDO mkdir -p "$PERSIST_DIR"
+$SUDO chown -R "$APP_USER:$APP_USER" "$PERSIST_DIR"
+
 $SUDO tee /etc/systemd/system/kindred-connect.service >/dev/null <<EOF
 [Unit]
 Description=ZAPMRO Kindred Connect
@@ -97,6 +101,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$APP_DIR
 Environment=NODE_ENV=production
+Environment=PERSIST_DIR=$PERSIST_DIR
 ExecStart=/usr/bin/node $APP_DIR/Server/index.js
 Restart=always
 RestartSec=2

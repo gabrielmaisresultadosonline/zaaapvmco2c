@@ -3,8 +3,8 @@
 //  Works with or without npm packages installed
 // ═══════════════════════════════════════════════════════════════════════
 import { createServer } from 'http';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, statSync, rmSync, createReadStream } from 'fs';
-import { join, dirname, extname } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, statSync, rmSync, createReadStream, copyFileSync } from 'fs';
+import { join, dirname, extname, resolve, isAbsolute, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { createHmac, randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
@@ -249,6 +249,80 @@ function parseDotenv() {
 }
 parseDotenv();
 
+function resolveDirValue(v) {
+  const s = (v ?? '').toString().trim();
+  if (!s) return '';
+  return isAbsolute(s) ? s : resolve(ROOT, s);
+}
+
+function ensureDir(dir) {
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyDirRecursive(src, dst) {
+  if (!existsSync(src)) return;
+  const st = statSync(src);
+  if (st.isDirectory()) {
+    if (!existsSync(dst)) mkdirSync(dst, { recursive: true });
+    for (const name of readdirSync(src)) {
+      copyDirRecursive(join(src, name), join(dst, name));
+    }
+    return;
+  }
+  const parent = dirname(dst);
+  if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+  copyFileSync(src, dst);
+}
+
+function maybeMigrateDir(src, dst) {
+  try {
+    if (!src || !dst) return;
+    const a = resolve(src);
+    const b = resolve(dst);
+    if (a === b) return;
+    if (!existsSync(a)) return;
+    if (existsSync(b)) return;
+    ensureDir(dirname(b));
+    copyDirRecursive(a, b);
+  } catch {}
+}
+
+function pickPersistBase() {
+  const fromEnv = resolveDirValue(process.env.PERSIST_DIR);
+  const candidates = [fromEnv];
+  if (process.platform === 'linux' && !fromEnv) {
+    candidates.push(resolve(ROOT, '..', 'kindred-connect-persist'));
+  }
+  candidates.push(join(ROOT, 'persist'));
+  candidates.push(ROOT);
+  for (const c of candidates.filter(Boolean)) {
+    if (ensureDir(c)) return c;
+  }
+  return ROOT;
+}
+
+const PERSIST_BASE = pickPersistBase();
+const DATA = resolveDirValue(process.env.DATA_DIR) || join(PERSIST_BASE, 'data');
+const WA_AUTH_DIR = resolveDirValue(process.env.WA_AUTH_DIR) || join(PERSIST_BASE, '.wwebjs_auth');
+const MEDIA_BASE = resolveDirValue(process.env.MEDIA_DIR) || join(PERSIST_BASE, 'media');
+const WA_MEDIA_DIR = resolveDirValue(process.env.WA_MEDIA_DIR) || join(MEDIA_BASE, 'wa-media');
+const CHAT_MEDIA_DIR = resolveDirValue(process.env.CHAT_MEDIA_DIR) || join(MEDIA_BASE, 'chat-media');
+
+maybeMigrateDir(join(ROOT, 'data'), DATA);
+maybeMigrateDir(join(ROOT, '.wwebjs_auth'), WA_AUTH_DIR);
+maybeMigrateDir(join(ROOT, 'Public', 'wa-media'), WA_MEDIA_DIR);
+maybeMigrateDir(join(ROOT, 'Public', 'chat-media'), CHAT_MEDIA_DIR);
+
+ensureDir(DATA);
+ensureDir(WA_AUTH_DIR);
+ensureDir(WA_MEDIA_DIR);
+ensureDir(CHAT_MEDIA_DIR);
+
 function html(res, content, status = 200) {
   res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
   res.end(content);
@@ -292,7 +366,6 @@ function resolveGoogleRedirectUri(req) {
 }
 
 // ── DB ────────────────────────────────────────────────────────────────
-const DATA = join(ROOT, 'data');
 if (!existsSync(DATA)) mkdirSync(DATA, { recursive: true });
 
 const db = {
@@ -405,7 +478,7 @@ async function stopWhatsApp(sessionId) {
     }
   } catch {}
   try {
-    const sessionDir = join(ROOT, '.wwebjs_auth', `session-${sessionId}`);
+    const sessionDir = join(WA_AUTH_DIR, `session-${sessionId}`);
     killBrowserProcessesForSession(sessionDir);
   } catch {}
   waClients.delete(sessionId);
@@ -430,7 +503,7 @@ async function removeDirWithRetries(dirPath, retries = 10, delayMs = 400) {
 async function resetWhatsAppAuth(sessionId) {
   waInitLocks.delete(sessionId);
   await stopWhatsApp(sessionId);
-  const dirPath = join(ROOT, '.wwebjs_auth', `session-${sessionId}`);
+  const dirPath = join(WA_AUTH_DIR, `session-${sessionId}`);
   killBrowserProcessesForSession(dirPath);
   await removeDirWithRetries(dirPath, 20, 500);
   killBrowserProcessesForSession(dirPath);
@@ -579,6 +652,21 @@ function serveStatic(req, res) {
     }
     return;
   }
+  serveFilePath(req, res, filePath);
+}
+
+function safePathFromUrl(baseDir, urlPath) {
+  const raw = (urlPath || '').toString().replace(/^\/+/, '');
+  const abs = resolve(baseDir, raw);
+  const base = resolve(baseDir);
+  const absNorm = process.platform === 'win32' ? abs.toLowerCase() : abs;
+  const baseNorm = process.platform === 'win32' ? base.toLowerCase() : base;
+  if (absNorm === baseNorm) return null;
+  if (!absNorm.startsWith(baseNorm + sep)) return null;
+  return abs;
+}
+
+function serveFilePath(req, res, filePath) {
   const ext = extname(filePath);
   const mime = MIME[ext] || 'application/octet-stream';
   let st = null;
@@ -1345,7 +1433,7 @@ route('POST', '/api/whatsapp/send-media', async (req, res) => {
     const safeChat = waSafePart(to);
     const fileId = uuid();
     const rel = join('chat-media', safeSession, safeChat, `${waSafePart(fileId)}${ext}`).replace(/\\/g, '/');
-    const abs = join(ROOT, 'Public', rel);
+    const abs = join(CHAT_MEDIA_DIR, safeSession, safeChat, `${waSafePart(fileId)}${ext}`);
     const dir = dirname(abs);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(abs, file.buffer);
@@ -1914,6 +2002,22 @@ const httpServer = createServer(async (req, res) => {
     err(res, 'Not found', 404); return;
   }
 
+  if (url.startsWith('/wa-media/')) {
+    const rel = url.slice('/wa-media/'.length);
+    const abs = safePathFromUrl(WA_MEDIA_DIR, rel);
+    if (!abs || !existsSync(abs) || (statSync(abs)?.isDirectory?.() ?? false)) { res.writeHead(404); res.end('Not found'); return; }
+    serveFilePath(req, res, abs);
+    return;
+  }
+
+  if (url.startsWith('/chat-media/')) {
+    const rel = url.slice('/chat-media/'.length);
+    const abs = safePathFromUrl(CHAT_MEDIA_DIR, rel);
+    if (!abs || !existsSync(abs) || (statSync(abs)?.isDirectory?.() ?? false)) { res.writeHead(404); res.end('Not found'); return; }
+    serveFilePath(req, res, abs);
+    return;
+  }
+
   // Static files
   serveStatic(req, res);
 });
@@ -2051,7 +2155,7 @@ function saveWAMediaToPublic(sessionId, chatId, msgId, media) {
   const safeMsg = waSafePart(msgId);
   const baseName = safeMsg + (ext || '');
   const rel = join('wa-media', safeSession, safeChat, baseName).replace(/\\/g, '/');
-  const abs = join(ROOT, 'Public', rel);
+  const abs = join(WA_MEDIA_DIR, safeSession, safeChat, baseName);
   const dir = dirname(abs);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const buf = Buffer.from((media?.data || '').toString(), 'base64');
@@ -2081,7 +2185,7 @@ async function initWhatsApp(sessionId, userId) {
     const puppeteerOpts = { headless, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] };
     if (executablePath) puppeteerOpts.executablePath = executablePath;
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: sessionId, dataPath: join(ROOT, '.wwebjs_auth'), rmMaxRetries: 50 }),
+      authStrategy: new LocalAuth({ clientId: sessionId, dataPath: WA_AUTH_DIR, rmMaxRetries: 50 }),
       puppeteer: puppeteerOpts
     });
     client.on('qr', async (qr) => {
@@ -2741,7 +2845,7 @@ async function restoreSessions() {
   const flag = ((process.env.WA_RESTORE_SESSIONS || '') + '').trim().toLowerCase();
   if (flag === 'false' || flag === '0' || flag === 'no') return;
   if (!hasWA) return;
-  const authPath = join(ROOT, '.wwebjs_auth');
+  const authPath = WA_AUTH_DIR;
   if (!existsSync(authPath)) return;
   const sessions = db.load('sessions');
   for (const session of sessions) {
