@@ -212,7 +212,8 @@ function requireAuth(req, res) {
 // ── Static File Server ────────────────────────────────────────────────
 function serveStatic(req, res) {
   const requestPath = req.url.split('?')[0] || '/';
-  let filePath = join(ROOT, 'Public', requestPath);
+  const relativePath = requestPath.startsWith('/') ? requestPath.slice(1) : requestPath;
+  let filePath = join(ROOT, 'Public', relativePath);
   try {
     if (existsSync(filePath) && statSync(filePath).isDirectory()) {
       filePath = join(filePath, 'index.html');
