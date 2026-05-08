@@ -259,6 +259,38 @@ function escapeHtmlServer(text) {
   return s.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[ch] || ch));
 }
 
+function resolveRequestBaseUrl(req) {
+  const xfProto = (req.headers['x-forwarded-proto'] || '').toString().split(',')[0].trim();
+  const xfHost = (req.headers['x-forwarded-host'] || '').toString().split(',')[0].trim();
+  const host = (xfHost || (req.headers.host || '').toString().split(',')[0].trim()).trim();
+  const proto = (xfProto || ((req.socket && req.socket.encrypted) ? 'https' : 'http')).trim();
+  if (!host) return '';
+  return `${proto}://${host}`;
+}
+
+function isLocalhostUrl(u) {
+  const s = (u || '').toString();
+  return /\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(s);
+}
+
+function resolveGoogleRedirectUri(req) {
+  const allowLocal = ((process.env.ALLOW_LOCALHOST_OAUTH || '') + '').trim().toLowerCase() === 'true';
+  const envRedirect = (process.env.GOOGLE_REDIRECT_URI || '').toString().trim();
+  const publicBase = (process.env.PUBLIC_BASE_URL || process.env.APP_BASE_URL || '').toString().trim().replace(/\/+$/, '');
+  const reqBase = resolveRequestBaseUrl(req).replace(/\/+$/, '');
+  const candidates = [
+    envRedirect,
+    publicBase ? `${publicBase}/auth/google/callback` : '',
+    reqBase ? `${reqBase}/auth/google/callback` : '',
+    'https://zapmro.com.br/auth/google/callback'
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (!allowLocal && isLocalhostUrl(c)) continue;
+    return c;
+  }
+  return candidates[0] || 'https://zapmro.com.br/auth/google/callback';
+}
+
 // ── DB ────────────────────────────────────────────────────────────────
 const DATA = join(ROOT, 'data');
 if (!existsSync(DATA)) mkdirSync(DATA, { recursive: true });
@@ -616,7 +648,7 @@ route('GET', '/auth/google/callback', async (req, res) => {
 
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').toString().trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').toString().trim();
-  const redirectUri = (process.env.GOOGLE_REDIRECT_URI || 'https://zapmro.com.br/auth/google/callback').toString().trim();
+  const redirectUri = resolveGoogleRedirectUri(req);
   if (!clientId || !clientSecret) return html(res, '<h1>Falha</h1><p>Google OAuth não configurado no servidor.</p>', 500);
 
   try {
@@ -792,7 +824,7 @@ async function getGoogleAccessToken(userId) {
 route('GET', '/api/google/auth-url', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').toString().trim();
-  const redirectUri = (process.env.GOOGLE_REDIRECT_URI || 'https://zapmro.com.br/auth/google/callback').toString().trim();
+  const redirectUri = resolveGoogleRedirectUri(req);
   if (!clientId) return err(res, 'Google OAuth não configurado', 500);
   const state = signToken({ type: 'google_oauth', uid: u.id, returnTo: '/dashboard.html#contacts' });
   const scope = [
@@ -1506,14 +1538,35 @@ route('POST', '/api/flows/:sessionId/assets', async (req, res) => {
 // ── AI Config ─────────────────────────────────────────────────────────
 route('GET', '/api/ai-config/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === req.params.sessionId);
+  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
   const config = db.load('ai_config', {});
-  json(res, config[req.params.sessionId] || { enabled: false, provider: 'openai', model: 'gpt-4o-mini' });
+  const cfg = config[req.params.sessionId] || { enabled: false, provider: 'openai', model: 'gpt-4o-mini' };
+  const { apiKey, ...rest } = (cfg || {});
+  json(res, { ...rest, apiKeySet: !!apiKey, apiKeyHint: (cfg?.apiKeyHint || null) });
 });
 
 route('POST', '/api/ai-config/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === req.params.sessionId);
+  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
   const config = db.load('ai_config', {});
-  config[req.params.sessionId] = { ...config[req.params.sessionId], ...req.body, updatedAt: new Date().toISOString() };
+  const prev = config[req.params.sessionId] || {};
+  const body = req.body || {};
+  const next = { ...prev, ...body, updatedAt: new Date().toISOString() };
+  if (typeof body.apiKey === 'string') {
+    const k = body.apiKey.trim();
+    if (k) {
+      next.apiKey = k;
+      next.apiKeyHint = k.slice(-4);
+    } else {
+      delete next.apiKey;
+      delete next.apiKeyHint;
+    }
+  }
+  config[req.params.sessionId] = next;
   db.save('ai_config', config); json(res, { ok: true });
 });
 
@@ -1548,6 +1601,62 @@ route('GET', '/api/ai-chat-status/:sessionId', (req, res) => {
     out[k.slice(prefix.length)] = v;
   }
   json(res, { statuses: out, mode: cfg.mode, enabled: !!cfg.enabled });
+});
+
+route('GET', '/api/ai/summary/:sessionId', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === req.params.sessionId);
+  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  const store = db.load('ai_transcripts', {});
+  const chats = store?.[req.params.sessionId] || {};
+  const kanban = db.load('kanban', {})?.[req.params.sessionId] || null;
+  const tagByChat = new Map();
+  const cols = Array.isArray(kanban?.columns) ? kanban.columns : [];
+  for (const col of cols) {
+    const ids = Array.isArray(col?.chats) ? col.chats : [];
+    for (const id of ids) {
+      const k = String(id);
+      if (!tagByChat.has(k)) tagByChat.set(k, (col?.name || '').toString());
+    }
+  }
+  const statuses = db.load('ai_chat_status', {});
+  const cfg = getAIConfig(req.params.sessionId);
+  const out = [];
+  for (const [chatId, arr] of Object.entries(chats)) {
+    const items = Array.isArray(arr) ? arr : [];
+    if (!items.length) continue;
+    let userCount = 0;
+    let aiCount = 0;
+    let lastTs = 0;
+    let lastUser = '';
+    let lastAi = '';
+    for (const it of items) {
+      if (it?.role === 'assistant') { aiCount++; lastAi = (it?.content || '').toString(); }
+      else { userCount++; lastUser = (it?.content || '').toString(); }
+      lastTs = Math.max(lastTs, Number(it?.ts || 0));
+    }
+    const override = getAIChatOverride(statuses, req.params.sessionId, chatId);
+    const armed = isAIArmed(cfg, override);
+    const display = (() => {
+      const m = String(chatId).match(/^(\d+)@/);
+      return m?.[1] ? `+${m[1]}` : String(chatId);
+    })();
+    const snippet = (lastAi || lastUser || '').replace(/\s+/g, ' ').trim();
+    out.push({
+      chatId,
+      display,
+      tag: tagByChat.get(String(chatId)) || null,
+      lastTs,
+      userCount,
+      aiCount,
+      snippet: snippet.length > 140 ? snippet.slice(0, 140) + '…' : snippet,
+      override,
+      armed
+    });
+  }
+  out.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
+  json(res, { ok: true, sessionId: req.params.sessionId, mode: cfg.mode, enabled: !!cfg.enabled, chats: out.slice(0, 200) });
 });
 
 // ── Kanban ────────────────────────────────────────────────────────────
@@ -2094,6 +2203,7 @@ function isFirstInboundMessageOfDay(sessionId, chatId, tsSec) {
 function matchStartTrigger(startNode, sessionId, chatId, msg) {
   const d = startNode?.data || {};
   const t = d.trigger || 'keyword';
+  if (t === 'manual') return false;
   if (t === 'any') return true;
   if (t === 'first_message') return getHistory(sessionId, chatId).length === 1;
   if (t === 'first_message_day') return isFirstInboundMessageOfDay(sessionId, chatId, msg?.timestamp || Math.floor(Date.now() / 1000));
@@ -2320,6 +2430,7 @@ async function handleFlows(sessionId, chatId, msg, client, userId) {
       const start = getStartNode(flow);
       if (!start) continue;
       const t = (start?.data?.trigger || 'keyword').toString();
+      if (t === 'manual') continue;
       let ok = false;
       let kwLen = 0;
       if (t === 'keyword') {
@@ -2338,6 +2449,7 @@ async function handleFlows(sessionId, chatId, msg, client, userId) {
     }
 
     const t = (flow.trigger || 'keyword').toString();
+    if (t === 'manual') continue;
     let ok = false;
     let kwLen = 0;
     if (t === 'keyword') {

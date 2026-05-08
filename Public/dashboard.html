@@ -194,6 +194,8 @@
     }
     .page-header p { color: #666; font-size: 0.95rem; }
 
+    #chats-page .page-header { display: none; margin: 0; padding: 0; }
+
     /* ════════════════════════════════════════════════════════════════ */
     /* STATS GRID */
     /* ════════════════════════════════════════════════════════════════ */
@@ -1527,6 +1529,7 @@
                 <label style="display:block; margin-bottom:6px; font-weight:800;">Token OpenAI</label>
                 <input id="aiApiKey" type="password" placeholder="sk-..." style="width:100%; padding:10px; border: 1px solid var(--border); border-radius: 10px;">
                 <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">Fica salvo apenas nesta sessão do WhatsApp.</div>
+                <div class="text-muted" id="aiApiKeyStatus" style="font-size:0.78rem; margin-top:4px;"></div>
               </div>
 
               <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
@@ -1596,9 +1599,11 @@
               <i class="fas fa-history" style="margin-right: 10px;"></i> Histórico
             </div>
             <div class="card-body" style="padding: 14px;">
-              <div id="aiHistoryBox" class="text-muted" style="font-size:0.9rem; line-height:1.4; max-height: 360px; overflow:auto;">
-                Nenhuma atividade da IA registrada
+              <div style="display:flex; gap:10px; margin-bottom: 10px;">
+                <button class="btn-secondary-c" onclick="loadAIHistorySummary()"><i class="fas fa-rotate"></i>Atualizar</button>
+                <div class="text-muted" id="aiHistoryHint" style="font-size:0.82rem; align-self:center;"></div>
               </div>
+              <div id="aiHistoryBox" style="font-size:0.9rem; line-height:1.4; max-height: 360px; overflow:auto;"></div>
             </div>
           </div>
         </div>
@@ -2401,6 +2406,7 @@
 
       if (pageId === 'contacts') loadRealContacts();
       if (pageId === 'crm') loadKanban();
+      if (pageId === 'ai') { loadAIConfig(); loadAIHistorySummary(); }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -2501,6 +2507,7 @@
         const flows = await res.json().catch(() => []);
         FLOWS_CACHE = Array.isArray(flows) ? flows : [];
         renderFlowsList();
+        try { renderScheduleFlowOptions(); } catch {}
         if (FLOWV.flow) openVisualFlow(FLOWV.flow.id);
       } catch (e) {
         console.log('Erro ao carregar fluxos reais');
@@ -2522,6 +2529,7 @@
       if (isVisualFlow(flow)) {
         const s = getStartNodeClient(flow);
         const t = (s?.data?.trigger || 'keyword').toString();
+        if (t === 'manual') return 'Gatilho: envio manual';
         if (t === 'keyword') return `Gatilho: palavra "${(s?.data?.keyword || '').toString()}"`;
         if (t === 'first_message') return 'Gatilho: primeira mensagem';
         if (t === 'first_message_day') return 'Gatilho: primeira msg do dia';
@@ -2529,6 +2537,7 @@
         return `Gatilho: ${t}`;
       }
       const t = (flow.trigger || 'keyword').toString();
+      if (t === 'manual') return 'Gatilho: envio manual';
       if (t === 'keyword') return `Gatilho: palavra "${(flow.keyword || '').toString()}"`;
       if (t === 'first_message') return 'Gatilho: primeira mensagem';
       if (t === 'first_message_day') return 'Gatilho: primeira msg do dia';
@@ -3067,6 +3076,7 @@
           <div class="flow-prop-row">
             <div class="flow-prop-label">Gatilho</div>
             <select id="prop-trigger">
+              <option value="manual">Envio manual (somente botão)</option>
               <option value="keyword">Mensagem com palavra</option>
               <option value="any">Qualquer mensagem</option>
               <option value="first_message">Primeira mensagem</option>
@@ -3399,6 +3409,9 @@
 
     async function hydrateSchedulingUI() {
       if (!currentSessionId) return;
+      if (!Array.isArray(FLOWS_CACHE) || !FLOWS_CACHE.length) {
+        try { await loadRealFlows(); } catch {}
+      }
       renderScheduleFlowOptions();
       if (!SCHED_BOUND) {
         bindScheduleTypeToggles();
@@ -4016,10 +4029,17 @@
         }) : ids;
         const count = visible.length;
         const headColor = (col?.color || '').toString() || '#128c7e';
+        const colId = (col?.id || '').toString();
+        const colIdEnc = encodeURIComponent(colId);
         return `
           <div class="kanban-column" data-col-id="${escapeHtml((col?.id || '').toString())}">
             <div class="kanban-header" style="border-bottom-color:${escapeHtml(headColor)}">
-              <span>${escapeHtml((col?.name || 'Etiqueta').toString())} (${count})</span>
+              <div style="display:flex; align-items:center; justify-content:space-between; width:100%; gap:10px;">
+                <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml((col?.name || 'Etiqueta').toString())} (${count})</span>
+                <button class="btn-danger-c" style="padding:6px 8px; border-radius:10px;" title="Apagar etiqueta" onclick="kanbanDeleteColumn('${colIdEnc}')">
+                  <i class="fas fa-trash"></i>
+                </button>
+              </div>
             </div>
             <div class="kanban-body" data-drop-col="${escapeHtml((col?.id || '').toString())}"
               ondragover="kanbanDragOver(event)" ondrop="kanbanDrop(event)"
@@ -4114,6 +4134,37 @@
       if (!KANBAN_CACHE) KANBAN_CACHE = kanbanDefault();
       if (!Array.isArray(KANBAN_CACHE.columns)) KANBAN_CACHE.columns = [];
       KANBAN_CACHE.columns.push({ id, name, color, chats: [] });
+      renderKanban();
+      try {
+        const token = localStorage.getItem('token');
+        await fetch(`/api/kanban/${encodeURIComponent(currentSessionId)}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(KANBAN_CACHE)
+        });
+      } catch {}
+    }
+
+    async function kanbanDeleteColumn(colIdEnc) {
+      let colId = (colIdEnc || '').toString();
+      try { colId = decodeURIComponent(colId); } catch {}
+      if (!colId) return;
+      if (!KANBAN_CACHE) KANBAN_CACHE = kanbanDefault();
+      const cols = Array.isArray(KANBAN_CACHE.columns) ? KANBAN_CACHE.columns : [];
+      if (cols.length <= 1) return alert('Você precisa ter pelo menos 1 etiqueta.');
+      const col = cols.find(c => String(c?.id || '') === String(colId));
+      if (!col) return;
+      const name = (col?.name || 'Etiqueta').toString();
+      if (!confirm(`Apagar a etiqueta "${name}"?\n\nOs contatos desta coluna serão movidos para a primeira etiqueta.`)) return;
+      const target = cols.find(c => String(c?.id || '') !== String(colId)) || cols[0];
+      const moving = Array.isArray(col?.chats) ? col.chats.slice() : [];
+      if (target) {
+        if (!Array.isArray(target.chats)) target.chats = [];
+        for (const id of moving) {
+          if (!target.chats.some(x => String(x) === String(id))) target.chats.push(id);
+        }
+      }
+      KANBAN_CACHE.columns = cols.filter(c => String(c?.id || '') !== String(colId));
       renderKanban();
       try {
         const token = localStorage.getItem('token');
@@ -4689,6 +4740,7 @@
 
     async function loadAIConfig() {
       const box = document.getElementById('aiHistoryBox');
+      const keyStatus = document.getElementById('aiApiKeyStatus');
       if (!currentSessionId) return;
       try {
         const token = localStorage.getItem('token');
@@ -4704,6 +4756,10 @@
         set('aiMode', mode);
         set('aiModel', cfg.model || 'gpt-4o-mini');
         set('aiApiKey', '');
+        if (keyStatus) {
+          if (cfg.apiKeySet) keyStatus.textContent = cfg.apiKeyHint ? `Token salvo (final ${String(cfg.apiKeyHint)})` : 'Token salvo no servidor.';
+          else keyStatus.textContent = 'Token não configurado.';
+        }
         set('aiKeywordTrigger', cfg.keywordTrigger || '');
         setN('aiDelayMin', cfg.delayMinMs ?? 1500);
         setN('aiDelayMax', cfg.delayMaxMs ?? 3500);
@@ -4715,11 +4771,101 @@
         setN('aiSplitMaxParts', cfg.splitMaxParts ?? 3);
         setN('aiSplitMinChars', cfg.splitMinChars ?? 10);
         setN('aiSplitMaxChars', cfg.splitMaxChars ?? 60);
-        if (box) box.textContent = 'Configuração carregada. As respostas do agente aparecem no chat.';
+        if (box) box.innerHTML = '';
         refreshAIForSelectedChat();
+        loadAIHistorySummary();
       } catch {
-        if (box) box.textContent = 'Falha ao carregar configuração.';
+        if (box) box.innerHTML = '<div class="text-muted">Falha ao carregar configuração.</div>';
       }
+    }
+
+    async function loadAIHistorySummary() {
+      const box = document.getElementById('aiHistoryBox');
+      const hint = document.getElementById('aiHistoryHint');
+      if (!box) return;
+      box.innerHTML = '<div class="text-muted" style="padding: 10px;">Carregando...</div>';
+      if (hint) hint.textContent = '';
+      if (!currentSessionId) { box.innerHTML = '<div class="text-muted">Nenhuma sessão ativa.</div>'; return; }
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/ai/summary/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          box.innerHTML = `<div class="text-muted">${escapeHtml(data?.error || 'Falha ao carregar')}</div>`;
+          return;
+        }
+        const chats = Array.isArray(data?.chats) ? data.chats : [];
+        if (hint) hint.textContent = data?.enabled ? `Modo: ${String(data.mode || '')}` : 'Agente desligado';
+        if (!chats.length) {
+          box.innerHTML = '<div class="text-muted">Nenhuma atividade da IA registrada.</div>';
+          return;
+        }
+        box.innerHTML = chats.map(c => {
+          const chatId = (c?.chatId || '').toString();
+          const display = (c?.display || chatId).toString();
+          const label = c?.armed ? 'ATIVO' : 'PAUSADO';
+          const labelColor = c?.armed ? '#27ae60' : '#e74c3c';
+          const ts = c?.lastTs ? new Date(Number(c.lastTs)).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+          const userCount = Number(c?.userCount || 0);
+          const aiCount = Number(c?.aiCount || 0);
+          const snippet = (c?.snippet || '').toString();
+          const tag = (c?.tag || '').toString();
+          const chatIdEnc = encodeURIComponent(chatId);
+          const actLabel = c?.armed ? 'Assumir controle' : 'Ativar neste chat';
+          return `
+            <div style="border:1px solid var(--border); border-radius: 14px; padding: 12px; margin-bottom: 10px; display:flex; gap: 12px; align-items:flex-start;">
+              <div style="min-width:0; flex:1;">
+                <div style="display:flex; align-items:center; gap:10px; justify-content:space-between;">
+                  <div style="font-weight:900; color:#111b21; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(display)}</div>
+                  <div style="font-size:0.72rem; font-weight:900; color:${escapeHtml(labelColor)}; border:1px solid rgba(0,0,0,0.06); padding:4px 8px; border-radius: 999px;">${escapeHtml(label)}</div>
+                </div>
+                <div class="text-muted" style="font-size:0.82rem; margin-top: 6px;">
+                  Conversa: cliente ${userCount} • IA ${aiCount}${tag ? ` • Etiqueta: ${escapeHtml(tag)}` : ''}${ts ? ` • ${escapeHtml(ts)}` : ''}
+                </div>
+                <div style="margin-top: 8px; color:#334; font-size:0.88rem;">${escapeHtml(snippet || '—')}</div>
+                <div class="text-muted" style="font-size:0.82rem; margin-top: 8px;">
+                  Você pode assumir o controle clicando em “Assumir controle”, ou manter ativo o agente neste chat.
+                </div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:8px; flex-shrink:0;">
+                <button class="btn-secondary-c" onclick="openChatFromAISummary('${chatIdEnc}')"><i class="fas fa-comment"></i></button>
+                <button class="btn-primary-c" onclick="aiSetChatArmed('${chatIdEnc}', ${c?.armed ? 'false' : 'true'})" style="justify-content:center;">${escapeHtml(actLabel)}</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch {
+        box.innerHTML = '<div class="text-muted">Falha ao carregar histórico.</div>';
+      }
+    }
+
+    function openChatFromAISummary(chatIdEnc) {
+      let chatId = (chatIdEnc || '').toString();
+      try { chatId = decodeURIComponent(chatId); } catch {}
+      if (!chatId) return;
+      const nav = Array.from(document.querySelectorAll('.nav-item')).find(x => (x.getAttribute('onclick') || '').includes("switchPage('chats')"));
+      if (nav) nav.click();
+      setTimeout(() => {
+        try { loadRealChats(); } catch {}
+        const el = findChatItemEl(chatId);
+        selectChat(chatId, chatId, el || null);
+      }, 180);
+    }
+
+    async function aiSetChatArmed(chatIdEnc, enable) {
+      let chatId = (chatIdEnc || '').toString();
+      try { chatId = decodeURIComponent(chatId); } catch {}
+      if (!currentSessionId || !chatId) return;
+      try {
+        const token = localStorage.getItem('token');
+        await fetch('/api/ai-chat-status', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId, chatId, enabled: enable })
+        });
+      } catch {}
+      refreshAIForSelectedChat();
+      loadAIHistorySummary();
     }
 
     async function refreshAIForSelectedChat() {
