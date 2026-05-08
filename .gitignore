@@ -1,0 +1,10 @@
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+data/history/
+data/archives/
+Public/uploads/
+*.log
+.env.local
+dist/
+.DS_Store

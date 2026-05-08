@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZAPMRO CLOUD | Login</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #075e54 0%, #128c7e 50%, #25d366 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .login-wrap {
+      width: 100%;
+      max-width: 440px;
+    }
+    .logo-area {
+      text-align: center;
+      margin-bottom: 30px;
+      color: white;
+    }
+    .logo-area .icon {
+      width: 80px;
+      height: 80px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 15px;
+      font-size: 2rem;
+      backdrop-filter: blur(10px);
+    }
+    .logo-area h1 { font-size: 2rem; font-weight: 800; letter-spacing: 2px; }
+    .logo-area p { opacity: 0.85; font-size: 0.95rem; }
+    .card {
+      background: white;
+      border-radius: 20px;
+      padding: 40px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    .tab-btns {
+      display: flex;
+      background: #f5f5f5;
+      border-radius: 12px;
+      padding: 4px;
+      margin-bottom: 25px;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      background: transparent;
+      border-radius: 10px;
+      font-weight: 600;
+      color: #666;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      background: white;
+      color: #128c7e;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .form-group { margin-bottom: 18px; }
+    .form-label { font-weight: 600; color: #333; font-size: 0.9rem; margin-bottom: 6px; display: block; }
+    .form-control {
+      width: 100%;
+      padding: 12px 16px;
+      border: 2px solid #e8e8e8;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      transition: border-color 0.2s;
+      outline: none;
+    }
+    .form-control:focus { border-color: #128c7e; }
+    .input-group { position: relative; }
+    .input-group .form-control { padding-left: 44px; }
+    .input-group .icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #999;
+    }
+    .btn-primary-custom {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #128c7e, #25d366);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.3s;
+      letter-spacing: 1px;
+    }
+    .btn-primary-custom:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(18,140,126,0.4); }
+    .btn-primary-custom:disabled { opacity: 0.7; transform: none; }
+    .divider { text-align: center; margin: 20px 0; color: #999; font-size: 0.85rem; position: relative; }
+    .divider::before, .divider::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      width: 40%;
+      height: 1px;
+      background: #e0e0e0;
+    }
+    .divider::before { left: 0; }
+    .divider::after { right: 0; }
+    .btn-google {
+      width: 100%;
+      padding: 12px;
+      background: white;
+      border: 2px solid #e0e0e0;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: all 0.2s;
+      color: #333;
+    }
+    .btn-google:hover { border-color: #128c7e; background: #f9fff9; }
+    .alert { padding: 12px 16px; border-radius: 10px; margin-bottom: 15px; font-size: 0.9rem; }
+    .alert-error { background: #fff0f0; color: #c0392b; border: 1px solid #f5c6cb; }
+    .alert-success { background: #f0fff4; color: #27ae60; border: 1px solid #c3e6cb; }
+    .features { margin-top: 25px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .feature { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #666; }
+    .feature i { color: #25d366; }
+    .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: white; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="logo-area">
+      <div class="icon"><i class="fab fa-whatsapp"></i></div>
+      <h1>ZAPMRO CLOUD</h1>
+      <p>CRM Profissional para WhatsApp com IA</p>
+    </div>
+
+    <div class="card">
+      <div id="alert-area"></div>
+
+      <div class="tab-btns">
+        <button class="tab-btn active" id="tab-login" onclick="showTab('login')">Entrar</button>
+        <button class="tab-btn" id="tab-register" onclick="showTab('register')">Cadastrar</button>
+      </div>
+
+      <!-- Login Form -->
+      <div id="login-form">
+        <div class="form-group">
+          <label class="form-label">E-mail</label>
+          <div class="input-group">
+            <i class="fas fa-envelope icon"></i>
+            <input type="email" class="form-control" id="login-email" placeholder="seu@email.com" onkeydown="if(event.key==='Enter')doLogin()">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Senha</label>
+          <div class="input-group">
+            <i class="fas fa-lock icon"></i>
+            <input type="password" class="form-control" id="login-pass" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
+          </div>
+        </div>
+        <button class="btn-primary-custom" id="btn-login" onclick="doLogin()">
+          ACESSAR DASHBOARD
+        </button>
+        <div class="divider">ou continue com</div>
+        <button class="btn-google" onclick="loginGoogle()">
+          <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Entrar com Google
+        </button>
+      </div>
+
+      <!-- Register Form -->
+      <div id="register-form" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Nome completo</label>
+          <div class="input-group">
+            <i class="fas fa-user icon"></i>
+            <input type="text" class="form-control" id="reg-name" placeholder="Seu nome">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">E-mail</label>
+          <div class="input-group">
+            <i class="fas fa-envelope icon"></i>
+            <input type="email" class="form-control" id="reg-email" placeholder="seu@email.com">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Senha</label>
+          <div class="input-group">
+            <i class="fas fa-lock icon"></i>
+            <input type="password" class="form-control" id="reg-pass" placeholder="Mínimo 6 caracteres">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Código de acesso</label>
+          <div class="input-group">
+            <i class="fas fa-key icon"></i>
+            <input type="text" class="form-control" id="reg-promo" placeholder="ZAPMRO2026" onkeydown="if(event.key==='Enter')doRegister()">
+          </div>
+        </div>
+        <button class="btn-primary-custom" id="btn-register" onclick="doRegister()">
+          CRIAR CONTA GRATUITA
+        </button>
+      </div>
+
+      <div class="features">
+        <div class="feature"><i class="fas fa-check-circle"></i> Multi-sessão WhatsApp</div>
+        <div class="feature"><i class="fas fa-check-circle"></i> IA Integrada</div>
+        <div class="feature"><i class="fas fa-check-circle"></i> CRM Kanban</div>
+        <div class="feature"><i class="fas fa-check-circle"></i> Automações</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SUPABASE_URL = 'https://tuwokddiyltxsmcmzbaz.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR1d29rZGRpeWx0eHNtY216YmF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxOTc5MjQsImV4cCI6MjA5Mzc3MzkyNH0.m-b9PvlWfMYewSLHD2L9VjJuDXBJq60DDqJme6UNdrI';
+    const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    function showTab(tab) {
+      document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
+      document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
+      document.getElementById('tab-login').classList.toggle('active', tab === 'login');
+      document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+    }
+
+    function showAlert(msg, type = 'error') {
+      document.getElementById('alert-area').innerHTML =
+        `<div class="alert alert-${type}">${msg}</div>`;
+      setTimeout(() => document.getElementById('alert-area').innerHTML = '', 5000);
+    }
+
+    function setLoading(btnId, loading) {
+      const btn = document.getElementById(btnId);
+      btn.disabled = loading;
+      btn.innerHTML = loading
+        ? '<span class="spinner"></span> Aguarde...'
+        : btnId === 'btn-login' ? 'ACESSAR DASHBOARD' : 'CRIAR CONTA GRATUITA';
+    }
+
+    async function loginWithBackend(email, password, promoCode) {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, promoCode })
+      });
+      return res.json();
+    }
+
+    async function registerWithBackend(name, email, password, promoCode) {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password, promoCode })
+      });
+      return res.json();
+    }
+
+    async function doLogin() {
+      const email = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-pass').value;
+      if (!email) return showAlert('Digite seu e-mail');
+      setLoading('btn-login', true);
+      try {
+        // Try Supabase first
+        let { data, error } = await sb.auth.signInWithPassword({ email, password });
+        if (!error && data.user) {
+          const res = await fetch('/api/auth/supabase', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ supabase_user: data.user })
+          });
+          const backendData = await res.json();
+          if (backendData.token) {
+            setAuth(backendData);
+            return;
+          }
+        }
+        // Fallback to backend auth
+        const data2 = await loginWithBackend(email, password);
+        if (data2.token) setAuth(data2);
+        else showAlert(data2.error || 'Erro ao entrar');
+      } catch (e) {
+        showAlert('Erro de conexão. Verifique o servidor.');
+      } finally {
+        setLoading('btn-login', false);
+      }
+    }
+
+    async function doRegister() {
+      const name = document.getElementById('reg-name').value.trim();
+      const email = document.getElementById('reg-email').value.trim();
+      const password = document.getElementById('reg-pass').value;
+      const promoCode = document.getElementById('reg-promo').value.trim();
+      if (!email || !password) return showAlert('Preencha e-mail e senha');
+      if (password.length < 6) return showAlert('Senha deve ter mínimo 6 caracteres');
+      setLoading('btn-register', true);
+      try {
+        // Register in Supabase
+        let { data: sbData, error: sbErr } = await sb.auth.signUp({ email, password, options: { data: { full_name: name } } });
+        // Also register in backend
+        const data = await registerWithBackend(name, email, password, promoCode);
+        if (data.token) {
+          showAlert('Conta criada! Bem-vindo ao ZAPMRO! 🎉', 'success');
+          setTimeout(() => setAuth(data), 1500);
+        } else {
+          showAlert(data.error || 'Erro ao cadastrar');
+        }
+      } catch (e) {
+        showAlert('Erro de conexão');
+      } finally {
+        setLoading('btn-register', false);
+      }
+    }
+
+    async function loginGoogle() {
+      try {
+        const { data, error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin + '/dashboard.html' } });
+        if (error) showAlert(error.message);
+      } catch (e) {
+        showAlert('Google login não configurado. Use e-mail e senha.');
+      }
+    }
+
+    function setAuth(data) {
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      window.location.href = 'dashboard.html';
+    }
+
+    // Check if already logged in
+    const token = localStorage.getItem('token');
+    if (token) {
+      fetch('/api/me', { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? window.location.href = 'dashboard.html' : null)
+        .catch(() => {});
+    }
+
+    // Handle Supabase OAuth callback
+    sb.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        const res = await fetch('/api/auth/supabase', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ supabase_user: session.user })
+        });
+        const data = await res.json();
+        if (data.token) setAuth(data);
+      }
+    });
+  </script>
+</body>
+</html>
