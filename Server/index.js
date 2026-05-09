@@ -1745,6 +1745,36 @@ function getSessionActivities(sessionId, limit) {
   return arr.slice(-n).reverse();
 }
 
+function appendWinbackLog(campaignId, sessionId, entry) {
+  try {
+    const store = db.load('winback_logs', {});
+    const cid = String(campaignId || '');
+    if (!cid) return;
+    const arr = Array.isArray(store[cid]) ? store[cid] : [];
+    const item = {
+      id: uuid(),
+      campaignId: cid,
+      sessionId: String(sessionId || '') || null,
+      ...entry,
+      ts: Date.now(),
+      createdAt: new Date().toISOString()
+    };
+    arr.push(item);
+    if (arr.length > 2000) arr.splice(0, arr.length - 2000);
+    store[cid] = arr;
+    db.save('winback_logs', store);
+    if (io && sessionId) io.to(String(sessionId)).emit('winback-log', { sessionId: String(sessionId), campaignId: cid, item });
+  } catch {}
+}
+
+function getWinbackLogs(campaignId, limit) {
+  const store = db.load('winback_logs', {});
+  const cid = String(campaignId || '');
+  const arr = Array.isArray(store?.[cid]) ? store[cid] : [];
+  const n = Math.max(1, Math.min(500, Number(limit || 200) || 200));
+  return arr.slice(-n).reverse();
+}
+
 async function getGoogleAccessToken(userId) {
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').toString().trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').toString().trim();
@@ -3234,6 +3264,19 @@ route('GET', '/api/winback/:sessionId', (req, res) => {
   json(res, db.load('winback_campaigns').filter(c => c.sessionId === req.params.sessionId));
 });
 
+route('GET', '/api/winback/logs/:id', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const campaigns = db.load('winback_campaigns', []);
+  const found = campaigns.find(x => x.id === req.params.id) || null;
+  if (!found) return json(res, { ok: true, items: [] });
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === found.sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const qs = new URL(req.url, 'http://x').searchParams;
+  const limit = qs.get('limit');
+  json(res, { ok: true, campaignId: found.id, sessionId: found.sessionId, items: getWinbackLogs(found.id, limit) });
+});
+
 route('POST', '/api/winback', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessionId = (req.body?.sessionId || '').toString();
@@ -3320,6 +3363,7 @@ route('POST', '/api/winback/start/:id', (req, res) => {
   found.updatedAt = new Date().toISOString();
   campaigns[idx] = found;
   db.save('winback_campaigns', campaigns);
+  appendWinbackLog(found.id, found.sessionId, { status: 'start', title: 'Winback iniciado' });
   json(res, { ok: true, campaign: found });
 });
 
@@ -3336,6 +3380,7 @@ route('POST', '/api/winback/stop/:id', (req, res) => {
   found.updatedAt = new Date().toISOString();
   campaigns[idx] = found;
   db.save('winback_campaigns', campaigns);
+  appendWinbackLog(found.id, found.sessionId, { status: 'stop', title: 'Winback pausado' });
   json(res, { ok: true, campaign: found });
 });
 
@@ -4309,6 +4354,7 @@ if (hasCron) {
       if (!startSec) {
         c.startedAt = new Date().toISOString();
         changed = true;
+        appendWinbackLog(c.id, sessionId, { status: 'start', title: 'Winback iniciado (cron)' });
       }
       const startSec2 = startSec || nowSec;
       const endSec = startSec2 + durationSec;
@@ -4317,6 +4363,7 @@ if (hasCron) {
         c.endedAt = new Date().toISOString();
         campaigns[i] = c;
         changed = true;
+        appendWinbackLog(c.id, sessionId, { status: 'end', title: 'Winback finalizado' });
         continue;
       }
       const intervalSec = Math.floor((Number(c.intervalHours || 4) * 3600));
@@ -4331,7 +4378,13 @@ if (hasCron) {
         if (!chatId) continue;
         const msg = renderTemplateForChat(sessionId, chatId, template);
         if (!msg.trim()) continue;
-        try { await client.sendMessage(chatId, msg); } catch { continue; }
+        try {
+          await client.sendMessage(chatId, msg);
+          appendWinbackLog(c.id, sessionId, { status: 'sent', chatId, title: 'Mensagem enviada', preview: msg.slice(0, 120) });
+        } catch (e) {
+          appendWinbackLog(c.id, sessionId, { status: 'fail', chatId, title: 'Falha ao enviar', error: (e?.message || 'Erro').toString() });
+          continue;
+        }
         const nowIso = new Date().toISOString();
         if (!r.firstSentAt) r.firstSentAt = nowIso;
         r.lastSentAt = nowIso;

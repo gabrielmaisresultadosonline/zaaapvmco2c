@@ -1976,6 +1976,12 @@
               <div id="winbackCampaignList" class="scheduled-list"></div>
               <div style="height:10px"></div>
               <div class="text-muted" id="winbackStatsHint" style="font-size:0.85rem;"></div>
+              <div style="height:12px"></div>
+              <div style="font-weight:900; color:#111b21; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <span>Histórico de envios</span>
+                <button class="btn-secondary-c" onclick="loadWinbackSendHistory()" style="padding:8px 10px;"><i class="fas fa-rotate"></i></button>
+              </div>
+              <div id="winbackSendHistory" class="scheduled-list"></div>
             </div>
           </div>
         </div>
@@ -4571,7 +4577,7 @@
       updateWinbackStatsHint();
     }
 
-    function selectWinbackCampaign(id) {
+    async function selectWinbackCampaign(id) {
       WINBACK_SELECTED_ID = id;
       const c = (WINBACK_CAMPAIGNS || []).find(x => x.id === id) || null;
       if (!c) return;
@@ -4581,7 +4587,8 @@
       if (nameEl) nameEl.value = c.name || '';
       if (msgEl) msgEl.value = c.message || '';
       if (intEl) intEl.value = String(Number(c.intervalHours || 4));
-      loadWinbackCampaigns();
+      await loadWinbackCampaigns();
+      loadWinbackSendHistory();
     }
 
     async function saveWinbackCampaign() {
@@ -4614,6 +4621,7 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.error) return alert(data?.error || 'Falha ao iniciar');
         await loadWinbackCampaigns();
+        loadWinbackSendHistory();
         alert('Winback iniciado.');
       } catch {
         alert('Falha ao iniciar');
@@ -4629,9 +4637,49 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.error) return alert(data?.error || 'Falha ao pausar');
         await loadWinbackCampaigns();
+        loadWinbackSendHistory();
         alert('Winback pausado.');
       } catch {
         alert('Falha ao pausar');
+      }
+    }
+
+    async function loadWinbackSendHistory() {
+      const box = document.getElementById('winbackSendHistory');
+      if (!box) return;
+      const id = (WINBACK_SELECTED_ID || '').toString();
+      if (!id) { box.innerHTML = '<div class="text-muted" style="padding:12px;">Selecione uma campanha.</div>'; return; }
+      box.innerHTML = '<div class="text-muted" style="padding:12px;">Carregando...</div>';
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/winback/logs/${encodeURIComponent(id)}?limit=200`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        const items = Array.isArray(data?.items) ? data.items : [];
+        if (!items.length) { box.innerHTML = '<div class="text-muted" style="padding:12px;">Nenhum envio registrado ainda.</div>'; return; }
+        box.innerHTML = items.map(it => {
+          const status = (it?.status || '').toString();
+          const chatId = (it?.chatId || '').toString();
+          const title = (it?.title || '').toString();
+          const preview = (it?.preview || '').toString();
+          const err = (it?.error || '').toString();
+          const ts = Number(it?.ts || 0) || 0;
+          const time = ts ? new Date(ts).toLocaleString('pt-BR') : '';
+          const badge = status === 'sent' ? '✅' : status === 'fail' ? '❌' : status === 'start' ? '▶️' : status === 'stop' ? '⏸️' : status === 'end' ? '🏁' : '•';
+          const sub = [chatId ? `Chat: ${chatId}` : '', preview ? `Msg: ${preview}` : '', err ? `Erro: ${err}` : ''].filter(Boolean).join(' • ');
+          return `
+            <div class="scheduled-item">
+              <div class="meta">
+                <div class="title">${escapeHtml(`${badge} ${title}`)}</div>
+                <div class="sub">${escapeHtml(sub)}</div>
+              </div>
+              <div class="actions">
+                <div class="text-muted" style="font-size:0.82rem;">${escapeHtml(time)}</div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch {
+        box.innerHTML = '<div class="text-muted" style="padding:12px;">Falha ao carregar histórico.</div>';
       }
     }
 
