@@ -3021,18 +3021,17 @@ const httpServer = createServer(async (req, res) => {
 
   const url = req.url.split('?')[0];
 
-  // API routes
-  if (url.startsWith('/api/')) {
-    const match = matchRoute(req.method, url);
-    if (match) {
-      req.params = match.params;
-      req.body = await parseBody(req);
-      try { await match.handler(req, res); }
-      catch (e) { console.error('Route error:', e); err(res, e.message, 500); }
-      return;
-    }
-    err(res, 'Not found', 404); return;
+  const match = matchRoute(req.method, url);
+  if (match) {
+    req.params = match.params;
+    req.body = (req.method === 'GET' || req.method === 'HEAD') ? {} : await parseBody(req);
+    try { await match.handler(req, res); }
+    catch (e) { console.error('Route error:', e); err(res, e.message, 500); }
+    return;
   }
+
+  // API not found
+  if (url.startsWith('/api/')) { err(res, 'Not found', 404); return; }
 
   if (url.startsWith('/wa-media/')) {
     const rel = url.slice('/wa-media/'.length);
