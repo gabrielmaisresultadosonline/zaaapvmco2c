@@ -1611,9 +1611,10 @@
 
               <div style="margin-bottom: 12px;">
                 <label style="display:block; margin-bottom:6px; font-weight:800;">Token OpenAI</label>
-                <input id="aiApiKey" type="password" placeholder="sk-..." style="width:100%; padding:10px; border: 1px solid var(--border); border-radius: 10px;">
-                <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">Fica salvo apenas nesta sessão do WhatsApp.</div>
-                <div class="text-muted" id="aiApiKeyStatus" style="font-size:0.78rem; margin-top:4px;"></div>
+                <div class="text-muted" id="aiApiKeyStatus" style="font-size:0.85rem; line-height:1.35;">Configure o token em Configurações.</div>
+                <div style="margin-top:10px;">
+                  <button class="btn-secondary-c" onclick="openSettingsAiToken()" style="width:100%; justify-content:center;">Abrir Configurações</button>
+                </div>
               </div>
 
               <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
@@ -1873,35 +1874,56 @@
         <div style="display: grid; gap: 20px; max-width: 600px;">
           <div class="card">
             <div class="card-header">
-              <i class="fas fa-user" style="margin-right: 10px;"></i> Perfil
+              <div style="display:flex; align-items:center; justify-content:space-between; width:100%; gap:12px;">
+                <div><i class="fas fa-user" style="margin-right: 10px;"></i> Perfil</div>
+                <button class="btn-secondary-c" id="settingsEditBtn" onclick="toggleSettingsEdit(true)" style="padding:6px 10px; border-radius:10px;">
+                  <i class="fas fa-pen"></i>
+                </button>
+              </div>
             </div>
             <div class="card-body">
-              <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 8px; font-weight: 600;">Nome</label>
-                <input type="text" id="settingsName" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px;" />
+              <div id="settingsProfileView">
+                <div class="contact-field" style="margin-top:0;">
+                  <label>Nome</label>
+                  <div class="value" id="settingsNameView">-</div>
+                </div>
+                <div class="contact-field">
+                  <label>Email</label>
+                  <div class="value" id="settingsEmailView">-</div>
+                </div>
+                <div class="text-muted" style="font-size:0.82rem;">Clique no ícone de editar para alterar.</div>
               </div>
-              <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 8px; font-weight: 600;">E-mail</label>
-                <input type="email" id="settingsEmail" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px;" />
+
+              <div id="settingsProfileEdit" style="display:none;">
+                <div style="margin-bottom: 12px;">
+                  <label style="display: block; margin-bottom: 8px; font-weight: 600;">Nome</label>
+                  <input type="text" id="settingsName" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px;" />
+                </div>
+                <div style="margin-bottom: 12px;">
+                  <label style="display: block; margin-bottom: 8px; font-weight: 600;">E-mail</label>
+                  <input type="email" id="settingsEmail" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px;" />
+                </div>
+                <div style="display:flex; gap:10px;">
+                  <button class="btn-secondary-c" onclick="toggleSettingsEdit(false)" style="flex:1; justify-content:center;">Cancelar</button>
+                  <button class="btn-primary-c" onclick="saveSettings()" style="flex:1; justify-content:center;">Salvar</button>
+                </div>
               </div>
-              <button onclick="saveSettings()" style="width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">
-                Salvar Alterações
-              </button>
             </div>
           </div>
 
           <div class="card">
             <div class="card-header">
-              <i class="fas fa-bell" style="margin-right: 10px;"></i> Notificações
+              <i class="fas fa-robot" style="margin-right: 10px;"></i> IA (Token)
             </div>
             <div class="card-body">
-              <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border);">
-                <label style="font-weight: 500;">Email de mensagens</label>
-                <input type="checkbox" style="width: 20px; height: 20px; cursor: pointer;" />
+              <div class="text-muted" id="settingsAiKeyStatus" style="font-size:0.85rem; line-height:1.35;">Selecione uma sessão do WhatsApp para ver o status.</div>
+              <div id="settingsAiKeyEdit" style="display:none; margin-top: 12px;">
+                <label style="display:block; margin-bottom:6px; font-weight:800;">Token OpenAI</label>
+                <input id="settingsAiApiKey" type="password" placeholder="sk-..." style="width:100%; padding:10px; border: 1px solid var(--border); border-radius: 10px;">
               </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 0;">
-                <label style="font-weight: 500;">Notificações de desktop</label>
-                <input type="checkbox" style="width: 20px; height: 20px; cursor: pointer;" />
+              <div style="display:flex; gap:10px; margin-top: 12px;">
+                <button class="btn-secondary-c" onclick="toggleSettingsAiKeyEdit()" style="flex:1; justify-content:center;">Alterar token</button>
+                <button class="btn-primary-c" onclick="saveSettingsAiKey()" style="flex:1; justify-content:center;">Salvar</button>
               </div>
             </div>
           </div>
@@ -1911,8 +1933,16 @@
               <i class="fas fa-link" style="margin-right: 10px;"></i> Integração WhatsApp
             </div>
             <div class="card-body">
-              <p style="color: #666; margin-bottom: 15px;">Conecte sua conta WhatsApp para começar a receber mensagens.</p>
-              <button onclick="connectWhatsApp()" style="width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">
+              <div class="contact-field" style="margin-top:0;">
+                <label>Status</label>
+                <div class="value" id="settingsWaStatus">-</div>
+              </div>
+              <div class="contact-field">
+                <label>Número</label>
+                <div class="value" id="settingsWaNumber">-</div>
+              </div>
+              <div class="text-muted" style="font-size:0.82rem;">O WhatsApp fica vinculado à sessão selecionada.</div>
+              <button id="settingsWaConnectBtn" onclick="connectWhatsApp()" style="width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; margin-top: 10px; display:none;">
                 <i class="fab fa-whatsapp" style="margin-right: 8px;"></i> Conectar WhatsApp
               </button>
             </div>
@@ -2654,6 +2684,7 @@
       if (pageId === 'contacts') loadRealContacts();
       if (pageId === 'crm') loadKanban();
       if (pageId === 'ai') { loadAIConfig(); loadAIHistorySummary(); }
+      if (pageId === 'settings') { loadSettingsPage(); }
       if (pageId === 'winback') { loadWinbackDraft(); loadWinbackCampaigns(); }
       setChatMobileOpen(false);
       if (isMobileViewport()) closeSidebar();
@@ -5207,7 +5238,6 @@
       try {
         const token = localStorage.getItem('token');
         const mode = (document.getElementById('aiMode')?.value || 'off').toString();
-        const apiKeyRaw = (document.getElementById('aiApiKey')?.value || '').toString().trim();
         const payload = {
           enabled: mode !== 'off',
           mode,
@@ -5224,7 +5254,6 @@
           splitMinChars: Number(document.getElementById('aiSplitMinChars')?.value || 10),
           splitMaxChars: Number(document.getElementById('aiSplitMaxChars')?.value || 60)
         };
-        if (apiKeyRaw && apiKeyRaw !== '••••••••') payload.apiKey = apiKeyRaw;
         const res = await fetch(`/api/ai-config/${currentSessionId}`, {
           method: 'POST',
           headers: {
@@ -5263,10 +5292,9 @@
         const setC = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
         set('aiMode', mode);
         set('aiModel', cfg.model || 'gpt-4o-mini');
-        set('aiApiKey', '');
         if (keyStatus) {
           if (cfg.apiKeySet) keyStatus.textContent = cfg.apiKeyHint ? `Token salvo (final ${String(cfg.apiKeyHint)})` : 'Token salvo no servidor.';
-          else keyStatus.textContent = 'Token não configurado.';
+          else keyStatus.textContent = 'Token não configurado (configure em Configurações).';
         }
         set('aiKeywordTrigger', cfg.keywordTrigger || '');
         setN('aiDelayMin', cfg.delayMinMs ?? 1500);
@@ -5282,9 +5310,18 @@
         if (box) box.innerHTML = '';
         refreshAIForSelectedChat();
         loadAIHistorySummary();
+        try { loadSettingsAiStatusFromConfig(cfg); } catch {}
       } catch {
         if (box) box.innerHTML = '<div class="text-muted">Falha ao carregar configuração.</div>';
       }
+    }
+
+    function openSettingsAiToken() {
+      try {
+        const nav = Array.from(document.querySelectorAll('.nav-item')).find(x => (x.getAttribute('onclick') || '').includes("switchPage('settings')"));
+        if (nav) nav.click();
+      } catch {}
+      setTimeout(() => { try { document.getElementById('settingsAiApiKey')?.focus(); } catch {} }, 100);
     }
 
     async function loadAIHistorySummary() {
@@ -5423,6 +5460,115 @@
       refreshAIForSelectedChat();
     }
 
+    async function loadSettingsPage() {
+      await Promise.allSettled([
+        loadSettingsProfile(),
+        loadSettingsWhatsAppStatus()
+      ]);
+      try { await loadAIConfig(); } catch {}
+    }
+
+    async function loadSettingsProfile() {
+      const nameView = document.getElementById('settingsNameView');
+      const emailView = document.getElementById('settingsEmailView');
+      const nameInput = document.getElementById('settingsName');
+      const emailInput = document.getElementById('settingsEmail');
+
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/me', { headers: { 'Authorization': `Bearer ${token}` } });
+        const me = await res.json().catch(() => ({}));
+        if (me?.email) {
+          const user = JSON.parse(localStorage.getItem('user') || '{}');
+          user.name = me.name;
+          user.email = me.email;
+          user.role = me.role;
+          localStorage.setItem('user', JSON.stringify(user));
+        }
+      } catch {}
+
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const name = (user?.name || '').toString() || '-';
+      const email = (user?.email || '').toString() || '-';
+      if (nameView) nameView.textContent = name;
+      if (emailView) emailView.textContent = email;
+      if (nameInput) nameInput.value = (user?.name || '').toString();
+      if (emailInput) emailInput.value = (user?.email || '').toString();
+      toggleSettingsEdit(false);
+    }
+
+    function toggleSettingsEdit(on) {
+      const view = document.getElementById('settingsProfileView');
+      const edit = document.getElementById('settingsProfileEdit');
+      if (view) view.style.display = on ? 'none' : 'block';
+      if (edit) edit.style.display = on ? 'block' : 'none';
+    }
+
+    function toggleSettingsAiKeyEdit() {
+      const box = document.getElementById('settingsAiKeyEdit');
+      const input = document.getElementById('settingsAiApiKey');
+      if (!box) return;
+      const open = box.style.display !== 'none';
+      box.style.display = open ? 'none' : 'block';
+      if (input) input.value = '';
+      if (!open) setTimeout(() => { try { input?.focus(); } catch {} }, 50);
+    }
+
+    function loadSettingsAiStatusFromConfig(cfg) {
+      const el = document.getElementById('settingsAiKeyStatus');
+      if (!el) return;
+      if (!currentSessionId) { el.textContent = 'Selecione uma sessão do WhatsApp para ver o status.'; return; }
+      if (cfg?.apiKeySet) el.textContent = cfg.apiKeyHint ? `Token salvo (final ${String(cfg.apiKeyHint)})` : 'Token salvo no servidor.';
+      else el.textContent = 'Token não configurado.';
+    }
+
+    async function saveSettingsAiKey() {
+      if (!currentSessionId) return alert('Selecione uma sessão do WhatsApp primeiro.');
+      const key = (document.getElementById('settingsAiApiKey')?.value || '').toString().trim();
+      if (!key) return alert('Informe o token.');
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/ai-config/${encodeURIComponent(currentSessionId)}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: key })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao salvar token');
+        toggleSettingsAiKeyEdit();
+        await loadAIConfig();
+        alert('Token salvo!');
+      } catch {
+        alert('Falha ao salvar token');
+      }
+    }
+
+    async function loadSettingsWhatsAppStatus() {
+      const st = document.getElementById('settingsWaStatus');
+      const num = document.getElementById('settingsWaNumber');
+      const btn = document.getElementById('settingsWaConnectBtn');
+      if (!st || !num) return;
+      if (!currentSessionId) {
+        st.textContent = 'Selecione uma sessão do WhatsApp';
+        num.textContent = '-';
+        if (btn) btn.style.display = 'none';
+        return;
+      }
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/whatsapp/self/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        const connected = !!data?.connected;
+        st.textContent = connected ? `Conectado${data?.pushname ? ` • ${String(data.pushname)}` : ''}` : 'Desconectado';
+        num.textContent = data?.number || '-';
+        if (btn) btn.style.display = connected ? 'none' : 'block';
+      } catch {
+        st.textContent = 'Erro';
+        num.textContent = '-';
+        if (btn) btn.style.display = 'block';
+      }
+    }
+
     async function saveSettings() {
       const name = document.getElementById('settingsName')?.value || '';
       const email = document.getElementById('settingsEmail')?.value || '';
@@ -5440,7 +5586,12 @@
         const data = await res.json();
 
         if (data.ok || data.email) {
-          alert('Configurações salvas com sucesso!');
+          const user = JSON.parse(localStorage.getItem('user') || '{}');
+          user.name = name;
+          user.email = email;
+          localStorage.setItem('user', JSON.stringify(user));
+          await loadSettingsProfile();
+          alert('Dados atualizados!');
         } else {
           alert('Erro ao salvar');
         }
