@@ -1983,6 +1983,12 @@
                 <button class="btn-secondary-c" onclick="loadWinbackSendHistory()" style="padding:8px 10px;"><i class="fas fa-rotate"></i></button>
               </div>
               <div id="winbackSendHistory" class="scheduled-list"></div>
+              <div style="height:12px"></div>
+              <div style="font-weight:900; color:#111b21; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <span>Próximos horários</span>
+                <button class="btn-secondary-c" onclick="renderWinbackUpcoming()" style="padding:8px 10px;"><i class="fas fa-clock"></i></button>
+              </div>
+              <div id="winbackUpcoming" class="scheduled-list"></div>
             </div>
           </div>
         </div>
@@ -2420,7 +2426,9 @@
       WINBACK_AUTO_TIMER = setInterval(() => {
         if (!currentSessionId) return;
         if ((document.getElementById('winback-page')?.classList?.contains('active')) && WINBACK_SELECTED_ID) {
+          loadWinbackCampaigns();
           loadWinbackSendHistory();
+          renderWinbackUpcoming();
         }
       }, 9000);
     }
@@ -4656,6 +4664,7 @@
         `;
       }).join('') || '<div class="text-muted" style="padding:12px;">Nenhuma campanha.</div>';
       updateWinbackStatsHint();
+      renderWinbackUpcoming();
     }
 
     async function selectWinbackCampaign(id) {
@@ -4670,6 +4679,7 @@
       if (intEl) intEl.value = String(Number(c.intervalHours || 4));
       await loadWinbackCampaigns();
       loadWinbackSendHistory();
+      renderWinbackUpcoming();
     }
 
     async function saveWinbackCampaign() {
@@ -4743,10 +4753,11 @@
           const title = (it?.title || '').toString();
           const preview = (it?.preview || '').toString();
           const err = (it?.error || '').toString();
+          const scheduledAt = Number(it?.scheduledAt || 0) || 0;
           const ts = Number(it?.ts || 0) || 0;
           const time = ts ? new Date(ts).toLocaleString('pt-BR') : '';
           const badge = status === 'sent' ? '✅' : status === 'fail' ? '❌' : status === 'start' ? '▶️' : status === 'stop' ? '⏸️' : status === 'end' ? '🏁' : '•';
-          const sub = [chatId ? `Chat: ${chatId}` : '', preview ? `Msg: ${preview}` : '', err ? `Erro: ${err}` : ''].filter(Boolean).join(' • ');
+          const sub = [chatId ? `Chat: ${chatId}` : '', scheduledAt ? `Agendado: ${new Date(scheduledAt * 1000).toLocaleString('pt-BR')}` : '', preview ? `Msg: ${preview}` : '', err ? `Erro: ${err}` : ''].filter(Boolean).join(' • ');
           return `
             <div class="scheduled-item">
               <div class="meta">
@@ -4762,6 +4773,35 @@
       } catch {
         box.innerHTML = '<div class="text-muted" style="padding:12px;">Falha ao carregar histórico.</div>';
       }
+    }
+
+    function renderWinbackUpcoming() {
+      const box = document.getElementById('winbackUpcoming');
+      if (!box) return;
+      const id = (WINBACK_SELECTED_ID || '').toString();
+      if (!id) { box.innerHTML = '<div class="text-muted" style="padding:12px;">Selecione uma campanha.</div>'; return; }
+      const c = (WINBACK_CAMPAIGNS || []).find(x => String(x.id) === id) || null;
+      if (!c) { box.innerHTML = '<div class="text-muted" style="padding:12px;">Selecione uma campanha.</div>'; return; }
+      const rec = Array.isArray(c.recipients) ? c.recipients : [];
+      const upcoming = rec
+        .filter(r => r && !r.respondedAt && (Number(r.nextSendAt || 0) || 0) > 0)
+        .sort((a, b) => (Number(a.nextSendAt || 0) || 0) - (Number(b.nextSendAt || 0) || 0))
+        .slice(0, 15);
+      if (!upcoming.length) { box.innerHTML = '<div class="text-muted" style="padding:12px;">Nenhum envio agendado ainda.</div>'; return; }
+      box.innerHTML = upcoming.map(r => {
+        const chatId = (r?.chatId || '').toString();
+        const when = Number(r?.nextSendAt || 0) || 0;
+        const name = (r?.name || '').toString();
+        const time = when ? new Date(when * 1000).toLocaleString('pt-BR') : '-';
+        return `
+          <div class="scheduled-item">
+            <div class="meta">
+              <div class="title">${escapeHtml(time)}</div>
+              <div class="sub">${escapeHtml([name ? name : '', chatId ? `Chat: ${chatId}` : ''].filter(Boolean).join(' • '))}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
     async function deleteSelectedWinback() {

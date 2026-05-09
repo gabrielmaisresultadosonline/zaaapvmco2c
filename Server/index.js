@@ -3290,10 +3290,12 @@ route('POST', '/api/winback', (req, res) => {
   const nowIso = new Date().toISOString();
   const recipientsRaw = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
   const uniq = new Map();
+  const existingByChat = new Map(Array.isArray(existing?.recipients) ? existing.recipients.map(r => [String(r?.chatId || r?.id || ''), r]) : []);
   for (const r of recipientsRaw) {
     const chatId = (r?.chatId || r?.id || r || '').toString();
     if (!chatId) continue;
     if (uniq.has(chatId)) continue;
+    const prev = existingByChat.get(chatId) || null;
     uniq.set(chatId, {
       chatId,
       name: (r?.name || '').toString(),
@@ -3301,7 +3303,9 @@ route('POST', '/api/winback', (req, res) => {
       firstSentAt: r?.firstSentAt || null,
       lastSentAt: r?.lastSentAt || null,
       sentCount: Number(r?.sentCount || 0),
-      respondedAt: r?.respondedAt || null
+      respondedAt: r?.respondedAt || null,
+      anchorSec: Number(r?.anchorSec ?? prev?.anchorSec ?? 0) || 0,
+      nextSendAt: Number(r?.nextSendAt ?? prev?.nextSendAt ?? 0) || 0
     });
   }
   const recipients = Array.from(uniq.values()).slice(0, 100);
@@ -3413,7 +3417,7 @@ route('POST', '/api/winback/draft/add', (req, res) => {
   const campaigns = db.load('winback_campaigns', []);
   let draft = campaigns.find(x => x.id === id) || { id, sessionId: sid, userId: sess.userId, type: 'draft', name: 'Rascunho', message: '', recipients: [], active: false, createdAt: nowIso };
   const rec = Array.isArray(draft.recipients) ? draft.recipients : [];
-  if (!rec.find(r => (r?.chatId || r?.id || '') === cid)) rec.push({ chatId: cid, name, addedAt: nowIso, firstSentAt: null, lastSentAt: null, sentCount: 0, respondedAt: null });
+  if (!rec.find(r => (r?.chatId || r?.id || '') === cid)) rec.push({ chatId: cid, name, addedAt: nowIso, firstSentAt: null, lastSentAt: null, sentCount: 0, respondedAt: null, anchorSec: 0, nextSendAt: 0 });
   draft.recipients = rec.slice(0, 100);
   draft.updatedAt = nowIso;
   const idx = campaigns.findIndex(x => x.id === id);
@@ -4327,7 +4331,9 @@ if (hasCron) {
         firstSentAt: r?.firstSentAt || null,
         lastSentAt: r?.lastSentAt || null,
         sentCount: Number(r?.sentCount || 0),
-        respondedAt: r?.respondedAt || null
+        respondedAt: r?.respondedAt || null,
+        anchorSec: Number(r?.anchorSec || 0) || 0,
+        nextSendAt: Number(r?.nextSendAt || 0) || 0
       });
     }
     return {
@@ -4370,27 +4376,66 @@ if (hasCron) {
       const intervalSec = Math.floor((Number(c.intervalHours || 4) * 3600));
       const template = (c.message || '').toString();
       if (!template.trim()) continue;
-      for (const r of c.recipients) {
+      const recipients = Array.isArray(c.recipients) ? c.recipients : [];
+      const spreadWindowSec = Math.min(1800, Math.max(300, recipients.length * 12));
+      const graceSec = 5 * 60;
+      const maxPerTick = 3;
+
+      const stable = recipients.slice().sort((a, b) => String(a?.chatId || '').localeCompare(String(b?.chatId || '')));
+      for (let idx = 0; idx < stable.length; idx++) {
+        const r = stable[idx];
         if (r.respondedAt) continue;
-        const last = Date.parse(r.lastSentAt || '') || 0;
-        const lastSec = last ? Math.floor(last / 1000) : 0;
-        if (lastSec && (nowSec - lastSec) < intervalSec) continue;
         const chatId = (r.chatId || '').toString();
         if (!chatId) continue;
+        if (!Number(r.anchorSec || 0)) {
+          r.anchorSec = startSec2 + randInt(30, spreadWindowSec);
+          r.nextSendAt = Number(r.nextSendAt || 0) || r.anchorSec;
+          changed = true;
+        }
+        if (!Number(r.nextSendAt || 0)) {
+          r.nextSendAt = r.anchorSec;
+          changed = true;
+        }
+      }
+
+      const due = recipients
+        .filter(r => r && !r.respondedAt && (Number(r.nextSendAt || 0) || 0) > 0)
+        .sort((a, b) => (Number(a.nextSendAt || 0) || 0) - (Number(b.nextSendAt || 0) || 0));
+
+      let sentThisTick = 0;
+      for (const r of due) {
+        if (sentThisTick >= maxPerTick) break;
+        const chatId = (r.chatId || '').toString();
+        if (!chatId) continue;
+        const nextAt = Number(r.nextSendAt || 0) || 0;
+        if (!nextAt || nowSec < nextAt) break;
+        if (nowSec > (nextAt + graceSec)) {
+          const k = Math.floor((nowSec - r.anchorSec) / intervalSec) + 1;
+          r.nextSendAt = r.anchorSec + (k * intervalSec);
+          changed = true;
+          appendWinbackLog(c.id, sessionId, { status: 'skip', chatId, title: 'Envio perdido (reagendado)', scheduledAt: nextAt });
+          continue;
+        }
         const msg = renderTemplateForChat(sessionId, chatId, template);
         if (!msg.trim()) continue;
         try {
           await client.sendMessage(chatId, msg);
-          appendWinbackLog(c.id, sessionId, { status: 'sent', chatId, title: 'Mensagem enviada', preview: msg.slice(0, 120) });
+          appendWinbackLog(c.id, sessionId, { status: 'sent', chatId, title: 'Mensagem enviada', scheduledAt: nextAt, preview: msg.slice(0, 120) });
         } catch (e) {
-          appendWinbackLog(c.id, sessionId, { status: 'fail', chatId, title: 'Falha ao enviar', error: (e?.message || 'Erro').toString() });
+          appendWinbackLog(c.id, sessionId, { status: 'fail', chatId, title: 'Falha ao enviar', scheduledAt: nextAt, error: (e?.message || 'Erro').toString() });
+          const k = Math.floor((nowSec - r.anchorSec) / intervalSec) + 1;
+          r.nextSendAt = r.anchorSec + (k * intervalSec);
+          changed = true;
           continue;
         }
         const nowIso = new Date().toISOString();
         if (!r.firstSentAt) r.firstSentAt = nowIso;
         r.lastSentAt = nowIso;
         r.sentCount = Number(r.sentCount || 0) + 1;
+        const k2 = Math.floor((nowSec - r.anchorSec) / intervalSec) + 1;
+        r.nextSendAt = r.anchorSec + (k2 * intervalSec);
         changed = true;
+        sentThisTick += 1;
       }
       campaigns[i] = c;
     }
