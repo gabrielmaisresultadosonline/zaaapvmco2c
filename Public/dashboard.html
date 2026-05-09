@@ -5017,6 +5017,7 @@
         KANBAN_CACHE = (kanbanData && Array.isArray(kanbanData.columns)) ? kanbanData : kanbanDefault();
         const contacts = Array.isArray(contactsData) ? contactsData : [];
         const chats = Array.isArray(chatsData) ? chatsData : [];
+        const convSet = new Set(chats.filter(x => x && !x.isGroup && x.id).map(x => String(x.id)));
         KANBAN_CHAT_META = new Map();
         for (const ch of chats) {
           const id = (ch?.id || '').toString();
@@ -5030,12 +5031,15 @@
         const byId = new Map();
         for (const c of contacts) {
           const id = (c?.waId || c?.id || '').toString();
-          if (id) byId.set(id, c);
+          if (!id) continue;
+          if (!convSet.has(id)) continue;
+          byId.set(id, c);
         }
         for (const ch of chats) {
           if (ch?.isGroup) continue;
           const id = (ch?.id || '').toString();
           if (!id) continue;
+          if (!convSet.has(id)) continue;
           const existing = byId.get(id);
           if (existing) {
             if (!existing.name && ch?.name) existing.name = ch.name;
@@ -5059,6 +5063,11 @@
           delete c.contacts;
           delete c.items;
           changed = true;
+        }
+        if (Array.isArray(c.chats) && (KANBAN_CHAT_META instanceof Map)) {
+          const before = c.chats.length;
+          c.chats = c.chats.filter(id => KANBAN_CHAT_META.has(String(id)));
+          if (c.chats.length !== before) changed = true;
         }
       }
       if (changed) {
