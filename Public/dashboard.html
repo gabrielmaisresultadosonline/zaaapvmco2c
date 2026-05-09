@@ -1463,6 +1463,18 @@
               <div class="chat-list-header">
                 <input type="text" class="search-box" id="chatSearch" placeholder="Pesquisar chats...">
               </div>
+              <div id="chatSyncBar" style="display:none; padding:10px 12px; border-bottom:1px solid var(--border); background:#fff;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
+                  <div style="font-weight:900; color:#111b21; min-width:0;">
+                    <span id="chatSyncText">Carregando conversas...</span>
+                  </div>
+                  <button class="btn-danger-c" style="padding:8px 10px;" onclick="cancelChatSync()">Cancelar</button>
+                </div>
+                <div style="height:10px; background:#f0f2f5; border-radius:999px; overflow:hidden;">
+                  <div id="chatSyncFill" style="height:10px; width:0%; background:var(--primary); border-radius:999px;"></div>
+                </div>
+                <div class="text-muted" id="chatSyncMeta" style="font-size:0.82rem; margin-top:6px;">-</div>
+              </div>
               <div class="chats-container" id="chatListContainer">
                 <div style="padding: 30px 15px; text-align: center; color: #999;">
                   <i class="fas fa-message" style="font-size: 2rem; opacity: 0.3; display: block; margin-bottom: 10px;"></i>
@@ -2388,11 +2400,16 @@
           if (p?.item) addWinbackLogItem(p.campaignId, p.item, true);
           scheduleRealtimeRefresh('winback-log');
         });
+        socket.on('wa-sync', (p) => {
+          if (p?.sessionId !== currentSessionId) return;
+          handleChatSyncEvent(p);
+        });
         socket.on('ready', (p) => {
           if (p?.sessionId === currentSessionId) {
             updateStatusBadge();
             loadRealChats();
             refreshDashboard();
+            ensureChatSync();
           }
         });
         socket.on('disconnected', (p) => {
@@ -3174,12 +3191,96 @@
       if (hint) hint.textContent = `${next + 1}/${slides.length}`;
     }
 
+    function setChatSyncBarState(visible, text, done, total, meta) {
+      const bar = document.getElementById('chatSyncBar');
+      const fill = document.getElementById('chatSyncFill');
+      const t = document.getElementById('chatSyncText');
+      const m = document.getElementById('chatSyncMeta');
+      if (!bar || !fill || !t || !m) return;
+      bar.style.display = visible ? 'block' : 'none';
+      if (text !== undefined) t.textContent = (text || '').toString();
+      const d = Number(done || 0) || 0;
+      const tot = Number(total || 0) || 0;
+      const pct = tot > 0 ? Math.max(0, Math.min(100, Math.round((d / tot) * 100))) : 0;
+      fill.style.width = visible && tot > 0 ? `${pct}%` : (visible ? '12%' : '0%');
+      m.textContent = (meta || '').toString() || (tot > 0 ? `${d}/${tot}` : '');
+    }
+
+    function handleChatSyncEvent(p) {
+      const status = (p?.status || '').toString();
+      const phase = (p?.phase || '').toString();
+      const done = Number(p?.done || 0) || 0;
+      const total = Number(p?.total || 0) || 0;
+      const msg = (p?.message || '').toString();
+      if (status === 'running') {
+        setChatSyncBarState(true, msg || 'Sincronizando conversas...', done, total, phase ? `Etapa: ${phase}${total ? ` • ${done}/${total}` : ''}` : '');
+        return;
+      }
+      if (status === 'done') {
+        setChatSyncBarState(true, 'Concluído', total || done, total || done, 'Atualizando lista...');
+        setTimeout(() => setChatSyncBarState(false), 900);
+        loadRealChats();
+        return;
+      }
+      if (status === 'cancelled') {
+        setChatSyncBarState(true, 'Sincronização cancelada', 0, 0, '');
+        setTimeout(() => setChatSyncBarState(false), 900);
+        return;
+      }
+      if (status === 'error') {
+        setChatSyncBarState(true, msg || 'Erro ao sincronizar', 0, 0, '');
+        setTimeout(() => setChatSyncBarState(false), 1800);
+      }
+    }
+
+    async function ensureChatSync(force) {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token || !currentSessionId) return;
+        const res = await fetch(`/api/whatsapp/sync/status?sessionId=${encodeURIComponent(currentSessionId)}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json().catch(() => ({}));
+        const running = !!data?.running;
+        const total = Number(data?.total || 0) || 0;
+        if (running) {
+          setChatSyncBarState(true, 'Sincronizando conversas...', 0, 0, 'Em andamento');
+          return;
+        }
+        if (!force && total > 0) {
+          setChatSyncBarState(false);
+          return;
+        }
+        setChatSyncBarState(true, 'Carregando conversas...', 0, 0, 'Iniciando...');
+        await fetch(`/api/whatsapp/sync/start`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId })
+        }).catch(() => {});
+      } catch {
+        setChatSyncBarState(false);
+      }
+    }
+
+    async function cancelChatSync() {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token || !currentSessionId) return;
+        setChatSyncBarState(true, 'Cancelando...', 0, 0, '');
+        await fetch(`/api/whatsapp/sync/cancel`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId })
+        }).catch(() => {});
+      } catch {}
+    }
+
     async function loadRealChats() {
       try {
         const token = localStorage.getItem('token');
         if (!currentSessionId) return;
 
-        const res = await fetch(`/api/whatsapp/chats?sessionId=${encodeURIComponent(currentSessionId)}`, {
+        const res = await fetch(`/api/whatsapp/chats?sessionId=${encodeURIComponent(currentSessionId)}&limit=200`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const chats = await res.json();
@@ -3189,10 +3290,11 @@
           container.innerHTML = `
             <div style="padding: 30px 15px; text-align: center; color: #999;">
               <i class="fas fa-message" style="font-size: 2rem; opacity: 0.3; display: block; margin-bottom: 10px;"></i>
-              <p style="margin: 0;">Nenhum chat real carregado</p>
-              <p style="font-size: 0.85rem; margin: 8px 0 0;">Clique no status “${escapeHtml(document.getElementById('statusText')?.textContent || 'Status')}” para abrir o QR e conectar.</p>
+              <p style="margin: 0;">Carregando suas conversas...</p>
+              <p style="font-size: 0.85rem; margin: 8px 0 0;">Isso pode demorar na primeira conexão. O sistema carrega aos poucos para não sobrecarregar.</p>
             </div>
           `;
+          ensureChatSync(true);
           return;
         }
 

@@ -2269,43 +2269,152 @@ route('GET', '/api/whatsapp/self/:sessionId', (req, res) => {
 });
 
 // ── WhatsApp Operations ───────────────────────────────────────────────
+const waSyncState = new Map();
+
+function waRandInt(min, max) {
+  const a = Math.floor(Number(min || 0));
+  const b = Math.floor(Number(max || 0));
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return a;
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+
+function getChatIndexStore() {
+  return db.load('wa_chat_index', {});
+}
+function saveChatIndexStore(store) {
+  db.save('wa_chat_index', store || {});
+}
+function getChatIndex(sessionId) {
+  const sid = String(sessionId || '');
+  const store = getChatIndexStore();
+  const item = store?.[sid] || null;
+  const chats = Array.isArray(item?.chats) ? item.chats : [];
+  return { updatedAt: item?.updatedAt || null, chats };
+}
+
+async function runChatIndexSync(sessionId, userId) {
+  const sid = String(sessionId || '');
+  if (!sid) return;
+  if (waSyncState.get(sid)?.running) return;
+  waSyncState.set(sid, { running: true, cancel: false });
+  const state = waSyncState.get(sid);
+  const emit = (payload) => { try { if (io) io.to(sid).emit('wa-sync', { sessionId: sid, ...payload }); } catch {} };
+  try {
+    const client = waClients.get(sid);
+    if (!client?.info) return;
+    emit({ status: 'running', phase: 'fetch', message: 'Carregando lista de conversas...' });
+    const chats = await client.getChats();
+    if (state.cancel) { emit({ status: 'cancelled', phase: 'fetch', message: 'Sincronização cancelada' }); return; }
+    const list = chats
+      .filter(c => c && !c.isGroup && c.id?._serialized)
+      .sort((a, b) => (Number(b?.timestamp || 0) || 0) - (Number(a?.timestamp || 0) || 0))
+      .slice(0, 400)
+      .map(c => {
+        const chatName = c.name || c.formattedTitle || c.id?.user || 'U';
+        const cached = getCachedPic(sid, c.id?._serialized);
+        return {
+          id: c.id?._serialized,
+          name: chatName,
+          number: c.id?.user || null,
+          pic: cached || '',
+          isGroup: !!c.isGroup,
+          unread: Number(c.unreadCount || 0) || 0,
+          timestamp: Number(c.timestamp || 0) || 0,
+          lastMessage: c.lastMessage ? { body: c.lastMessage.body, fromMe: !!c.lastMessage.fromMe } : null
+        };
+      });
+
+    const store = getChatIndexStore();
+    store[sid] = { sessionId: sid, updatedAt: new Date().toISOString(), chats: list };
+    saveChatIndexStore(store);
+    emit({ status: 'running', phase: 'save', done: 0, total: list.length, message: `Conversas carregadas: ${list.length}` });
+
+    const toFetchPics = list.filter(x => x && x.id && !x.pic).slice(0, 20);
+    let done = 0;
+    for (const item of toFetchPics) {
+      if (state.cancel) { emit({ status: 'cancelled', phase: 'pics', message: 'Sincronização cancelada' }); return; }
+      try {
+        const pic = await client.getProfilePicUrl(item.id);
+        if (pic) {
+          setCachedPic(sid, item.id, pic);
+          item.pic = pic;
+          const nextStore = getChatIndexStore();
+          const cur = nextStore?.[sid] || null;
+          if (cur && Array.isArray(cur.chats)) {
+            const idx = cur.chats.findIndex(c => String(c?.id || '') === String(item.id));
+            if (idx >= 0) cur.chats[idx].pic = pic;
+            cur.updatedAt = new Date().toISOString();
+            nextStore[sid] = cur;
+            saveChatIndexStore(nextStore);
+          }
+        }
+      } catch {}
+      done += 1;
+      emit({ status: 'running', phase: 'pics', done, total: toFetchPics.length, message: `Carregando fotos ${done}/${toFetchPics.length}` });
+      const waitMs = waRandInt(900, 1800);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+    emit({ status: 'done', phase: 'done', done: list.length, total: list.length, message: 'Concluído' });
+  } catch (e) {
+    emit({ status: 'error', phase: 'error', message: (e?.message || 'Erro ao sincronizar').toString() });
+  } finally {
+    waSyncState.delete(sid);
+  }
+}
+
+route('GET', '/api/whatsapp/sync/status', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const qs = new URL(req.url, 'http://x').searchParams;
+  const sessionId = (qs.get('sessionId') || '').toString();
+  if (!sessionId) return err(res, 'sessionId required', 400);
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const running = !!waSyncState.get(sessionId)?.running;
+  const index = getChatIndex(sessionId);
+  json(res, { ok: true, sessionId, running, updatedAt: index.updatedAt, total: index.chats.length });
+});
+
+route('POST', '/api/whatsapp/sync/start', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sessionId = (req.body?.sessionId || '').toString();
+  if (!sessionId) return err(res, 'sessionId required', 400);
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const client = waClients.get(sessionId);
+  if (!client?.info) return err(res, 'Session not connected', 400);
+  if (waSyncState.get(sessionId)?.running) return json(res, { ok: true, running: true });
+  runChatIndexSync(sessionId, u.id);
+  json(res, { ok: true, running: true });
+});
+
+route('POST', '/api/whatsapp/sync/cancel', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sessionId = (req.body?.sessionId || '').toString();
+  if (!sessionId) return err(res, 'sessionId required', 400);
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const st = waSyncState.get(sessionId);
+  if (st) st.cancel = true;
+  json(res, { ok: true });
+});
+
 route('GET', '/api/whatsapp/chats', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const qs = new URL(req.url, 'http://x').searchParams;
   const sessionId = qs.get('sessionId');
+  const limit = Math.max(1, Math.min(400, Number(qs.get('limit') || 200) || 200));
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return json(res, []);
-  const client = waClients.get(sessionId);
-  if (!client?.info) return json(res, []);
   try {
-    const chats = await client.getChats();
-    const slice = chats.slice(0, 200);
-    const result = slice.map(c => {
-      const chatName = c.name || c.formattedTitle || c.id?.user || 'U';
-      const cached = getCachedPic(sessionId, c.id?._serialized);
-      return {
-        id: c.id?._serialized,
-        name: chatName,
-        number: c.isGroup ? null : (c.id?.user || null),
-        pic: cached || `https://ui-avatars.com/api/?name=${encodeURIComponent(chatName)}&background=128c7e&color=fff`,
-        isGroup: !!c.isGroup,
-        unread: c.unreadCount || 0,
-        timestamp: c.timestamp,
-        lastMessage: c.lastMessage ? { body: c.lastMessage.body, fromMe: c.lastMessage.fromMe } : null
-      };
-    }).filter(x => x.id);
-
-    await Promise.allSettled(result.slice(0, 30).map(async (item) => {
-      try {
-        const pic = await client.getProfilePicUrl(item.id);
-        if (pic) {
-          item.pic = pic;
-          setCachedPic(sessionId, item.id, pic);
-        }
-      } catch {}
+    const index = getChatIndex(sessionId);
+    const result = (index.chats || []).slice(0, limit).map(c => ({
+      ...c,
+      pic: (c?.pic || '').toString() || `https://ui-avatars.com/api/?name=${encodeURIComponent((c?.name || 'U').toString())}&background=128c7e&color=fff`
     }));
-
     json(res, result);
   } catch (e) {
     console.error('getChats error:', e?.message || e);
