@@ -347,11 +347,25 @@ function isLocalhostUrl(u) {
   return /\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(s);
 }
 
+function normalizeOAuthRedirectUri(u) {
+  const raw = (u || '').toString().trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    const host = (url.hostname || '').toLowerCase();
+    if (host && host !== 'localhost' && host !== '127.0.0.1') url.protocol = 'https:';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return raw.replace(/\/+$/, '');
+  }
+}
+
 function resolveGoogleRedirectUri(req) {
   const allowLocal = ((process.env.ALLOW_LOCALHOST_OAUTH || '') + '').trim().toLowerCase() === 'true';
-  const envRedirect = (process.env.GOOGLE_REDIRECT_URI || '').toString().trim();
-  const publicBase = (process.env.PUBLIC_BASE_URL || process.env.APP_BASE_URL || '').toString().trim().replace(/\/+$/, '');
-  const reqBase = resolveRequestBaseUrl(req).replace(/\/+$/, '');
+  const envRedirect = normalizeOAuthRedirectUri((process.env.GOOGLE_REDIRECT_URI || '').toString().trim());
+  const publicBase = normalizeOAuthRedirectUri((process.env.PUBLIC_BASE_URL || process.env.APP_BASE_URL || '').toString().trim());
+  const reqBase = normalizeOAuthRedirectUri(resolveRequestBaseUrl(req));
   const candidates = [
     envRedirect,
     publicBase ? `${publicBase}/auth/google/callback` : '',
@@ -359,10 +373,11 @@ function resolveGoogleRedirectUri(req) {
     'https://zapmro.com.br/auth/google/callback'
   ].filter(Boolean);
   for (const c of candidates) {
-    if (!allowLocal && isLocalhostUrl(c)) continue;
-    return c;
+    const v = normalizeOAuthRedirectUri(c);
+    if (!allowLocal && isLocalhostUrl(v)) continue;
+    return v;
   }
-  return candidates[0] || 'https://zapmro.com.br/auth/google/callback';
+  return normalizeOAuthRedirectUri(candidates[0] || 'https://zapmro.com.br/auth/google/callback');
 }
 
 // ── DB ────────────────────────────────────────────────────────────────
@@ -385,7 +400,7 @@ const db = {
   }
 };
 
-['users','sessions','scheduled_messages','tags','contacts','auth_tokens','winback_campaigns'].forEach(f => db.ensure(f));
+['users','sessions','scheduled_messages','tags','contacts','auth_tokens','winback_campaigns','admin_audit'].forEach(f => db.ensure(f));
 ['flows','ai_config','kanban','ai_chat_status','ai_transcripts','flow_assets','flow_runs'].forEach(f => db.ensure(f, {}));
 
 // Create default admin
@@ -399,6 +414,28 @@ if (!users.find(u => u.email === (process.env.ADMIN_EMAIL || 'admin@zapmro.cloud
   });
   db.save('users', users);
   console.log('✅ Admin user created');
+}
+
+const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || '').toString().trim().toLowerCase();
+const superAdminPassword = (process.env.SUPER_ADMIN_PASSWORD || '').toString();
+if (superAdminEmail && superAdminPassword) {
+  const existing = users.find(u => String(u.email || '').toLowerCase() === superAdminEmail);
+  if (!existing) {
+    users.push({
+      id: uuid(),
+      name: 'Admin Geral',
+      email: superAdminEmail,
+      password: bcryptjs.hashSync(superAdminPassword, 10),
+      role: 'superadmin',
+      createdAt: new Date().toISOString()
+    });
+    db.save('users', users);
+    console.log('✅ Super admin user created');
+  } else if (existing.role !== 'superadmin') {
+    existing.role = 'superadmin';
+    existing.updatedAt = new Date().toISOString();
+    db.save('users', users);
+  }
 }
 
 // ── JWT Helpers ───────────────────────────────────────────────────────
@@ -623,13 +660,40 @@ function err(res, msg, status = 400) {
 function auth(req) {
   const token = (req.headers.authorization || '').replace('Bearer ', '');
   if (!token) return null;
-  try { return verifyToken(token); } catch { return null; }
+  try {
+    const payload = verifyToken(token);
+    const users = db.load('users');
+    const user = users.find(u => u.id === payload?.id);
+    if (!user) return null;
+    return { id: user.id, email: user.email, role: user.role, name: user.name, disabled: !!user.disabled };
+  } catch {
+    return null;
+  }
 }
 
 function requireAuth(req, res) {
   const user = auth(req);
   if (!user) { err(res, 'Unauthorized', 401); return null; }
+  if (user.disabled) { err(res, 'Conta desativada', 403); return null; }
   return user;
+}
+
+function isAdminRole(u) {
+  const r = (u?.role || '').toString();
+  return r === 'admin' || r === 'superadmin';
+}
+
+function requireSuperAdmin(req, res) {
+  const u = requireAuth(req, res); if (!u) return null;
+  if ((u.role || '').toString() !== 'superadmin') { err(res, 'Forbidden', 403); return null; }
+  return u;
+}
+
+function appendAdminAudit(actorId, action, meta) {
+  const arr = db.load('admin_audit', []);
+  arr.push({ id: uuid(), actorId, action: String(action || ''), meta: meta || null, ts: Date.now(), createdAt: new Date().toISOString() });
+  if (arr.length > 2000) arr.splice(0, arr.length - 2000);
+  db.save('admin_audit', arr);
 }
 
 // ── Static File Server ────────────────────────────────────────────────
@@ -725,6 +789,527 @@ route('GET', '/termosdoservico', (req, res) => {
   html(res, `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Termos de Serviço - ZAPMRO</title><style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:40px auto;padding:0 16px;line-height:1.5;color:#111}h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:28px 0 8px}p,li{color:#333}a{color:#128c7e}small{color:#666}</style></head><body><h1>Termos de Serviço</h1><small>Última atualização: ${new Date().toISOString().slice(0,10)}</small><p>Ao usar o ZAPMRO, você concorda com estes Termos.</p><h2>Uso do serviço</h2><ul><li>Você é responsável pelas mensagens enviadas, contatos e conteúdos configurados.</li><li>Você deve respeitar as políticas do WhatsApp e demais plataformas integradas.</li></ul><h2>Conta</h2><p>Você deve manter suas credenciais seguras. O uso não autorizado deve ser comunicado.</p><h2>Integrações</h2><p>Ao conectar serviços externos (ex.: Google), você autoriza o acesso necessário para a funcionalidade solicitada (ex.: sincronização de contatos).</p><h2>Limitações</h2><p>O serviço é fornecido “como está”, podendo passar por melhorias e manutenções.</p><h2>Contato</h2><p>Mais informações em <a href="https://zapmro.com.br">zapmro.com.br</a>.</p></body></html>`);
 });
 
+function adminPageHtml() {
+  return `<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ZAPMRO | Administrativo</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root{--primary:#128c7e;--bg:#f0f2f5;--border:#e0e0e0;--dark:#111b21}
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:#111b21}
+    .wrap{min-height:100%;display:flex;flex-direction:column}
+    .top{height:64px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 16px;position:sticky;top:0;z-index:10}
+    .brand{font-weight:900;letter-spacing:.5px;display:flex;align-items:center;gap:10px}
+    .brand i{color:var(--primary)}
+    .sp{flex:1}
+    .btn{border:1px solid var(--border);background:#fff;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+    .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+    .btn.danger{background:#e74c3c;border-color:#e74c3c;color:#fff}
+    .btn:active{transform:scale(.99)}
+    .pill{display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:6px 10px;font-weight:800;font-size:.82rem}
+    .pill.ok{background:#e8f8f0;color:#1f8f55}
+    .pill.bad{background:#fdf0f0;color:#c0392b}
+    .pill.warn{background:#fef9e7;color:#b9770e}
+    .content{flex:1;padding:16px;display:grid;grid-template-columns: 420px 1fr;gap:16px;min-height:0}
+    .card{background:#fff;border:1px solid var(--border);border-radius:16px;overflow:hidden;min-height:0;display:flex;flex-direction:column}
+    .card-h{padding:14px 16px;border-bottom:1px solid var(--border);font-weight:900;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .card-b{padding:14px 16px;overflow:auto;min-height:0}
+    .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+    .stat{border:1px solid var(--border);border-radius:14px;padding:12px;background:#fff}
+    .stat .k{font-size:.8rem;color:#667781;font-weight:800}
+    .stat .v{font-size:1.3rem;font-weight:1000;margin-top:6px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 8px;border-bottom:1px solid #f0f0f0;text-align:left;font-size:.9rem;vertical-align:middle}
+    th{font-size:.78rem;color:#667781;text-transform:uppercase;letter-spacing:.6px}
+    .row-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .input{width:100%;border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:1rem;outline:none}
+    .input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(18,140,126,.12)}
+    .login{max-width:460px;margin:8vh auto 0;background:#fff;border-radius:18px;border:1px solid var(--border);box-shadow:0 20px 60px rgba(0,0,0,.08);overflow:hidden}
+    .login .h{padding:16px;border-bottom:1px solid var(--border);font-weight:1000}
+    .login .b{padding:16px;display:flex;flex-direction:column;gap:12px}
+    .muted{color:#667781}
+    .split{display:grid;grid-template-columns: 1fr 1fr;gap:12px}
+    .viewer{display:grid;grid-template-columns: 340px 1fr;gap:12px;min-height:0}
+    .list{border:1px solid var(--border);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+    .list .head{padding:10px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center}
+    .list .items{flex:1;overflow:auto}
+    .item{padding:10px;border-bottom:1px solid #f0f0f0;cursor:pointer}
+    .item:hover{background:#f7f7f7}
+    .item.active{background:#f0f2f5}
+    .msgbox{border:1px solid var(--border);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+    .msgbox .head{padding:10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .msgs{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;background:#fff}
+    .m{max-width:min(78%,720px);padding:10px 12px;border-radius:14px;border:1px solid #eef0f2;white-space:pre-wrap;overflow-wrap:break-word}
+    .m.me{margin-left:auto;background:#dcf8c6}
+    .m.them{margin-right:auto;background:#fff}
+    .composer{padding:10px;border-top:1px solid var(--border);display:flex;gap:10px}
+    .back{display:none}
+    @media (max-width: 1024px){.content{grid-template-columns: 1fr}.grid4{grid-template-columns:repeat(2,1fr)}}
+    @media (max-width: 768px){
+      .grid4{grid-template-columns:1fr}
+      .split{grid-template-columns:1fr}
+      .viewer{grid-template-columns:1fr}
+      body.viewer-open .viewer .list{display:none}
+      body:not(.viewer-open) .viewer .msgbox{display:none}
+      .back{display:inline-flex}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="appRoot" style="display:none">
+    <div class="top">
+      <div class="brand"><i class="fas fa-shield-halved"></i><span>Administrativo</span></div>
+      <div class="sp"></div>
+      <div id="mePill" class="pill warn" style="display:none"></div>
+      <button class="btn" type="button" onclick="refreshAdmin()"><i class="fas fa-rotate"></i><span>Atualizar</span></button>
+      <button class="btn danger" type="button" onclick="adminLogout()"><i class="fas fa-right-from-bracket"></i><span>Sair</span></button>
+    </div>
+    <div class="content">
+      <div class="card">
+        <div class="card-h"><span>Cadastros</span><span class="muted" id="totalsSmall"></span></div>
+        <div class="card-b">
+          <div class="grid4" style="margin-bottom:12px">
+            <div class="stat"><div class="k">Usuários</div><div class="v" id="tUsers">0</div></div>
+            <div class="stat"><div class="k">Sessões</div><div class="v" id="tSessions">0</div></div>
+            <div class="stat"><div class="k">Conectadas</div><div class="v" id="tConnected">0</div></div>
+            <div class="stat"><div class="k">Contatos</div><div class="v" id="tContacts">0</div></div>
+          </div>
+          <input class="input" id="userFilter" placeholder="Buscar por nome/email..." oninput="renderUsers()">
+          <div style="height:10px"></div>
+          <div style="overflow:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Usuário</th>
+                  <th>Cadastro</th>
+                  <th>Último acesso</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="usersTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-h"><span>WhatsApp (visualizar e agir)</span><span class="muted" id="selInfo">Selecione uma sessão</span></div>
+        <div class="card-b" style="display:flex;flex-direction:column;gap:12px;min-height:0">
+          <div class="split">
+            <div>
+              <div style="font-weight:900;margin-bottom:6px">Sessão</div>
+              <select class="input" id="sessionSelect" onchange="selectSession(this.value)"></select>
+            </div>
+            <div>
+              <div style="font-weight:900;margin-bottom:6px">Status</div>
+              <div id="waStatusLine" class="pill warn">-</div>
+            </div>
+          </div>
+          <div class="split">
+            <div>
+              <div style="font-weight:900;margin-bottom:6px">Número conectado</div>
+              <div id="waNumber" class="muted">-</div>
+            </div>
+            <div>
+              <div style="font-weight:900;margin-bottom:6px">Leads (histórico)</div>
+              <div id="waLeads" class="muted">-</div>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button class="btn" type="button" onclick="openQr()"><i class="fas fa-qrcode"></i><span>QR</span></button>
+            <button class="btn" type="button" onclick="forceConnect()"><i class="fas fa-plug"></i><span>Forçar conectar</span></button>
+            <button class="btn" type="button" onclick="disconnectWa()"><i class="fas fa-link-slash"></i><span>Desconectar</span></button>
+            <button class="btn danger" type="button" onclick="resetWa()"><i class="fas fa-trash-can"></i><span>Reset</span></button>
+          </div>
+          <div class="viewer" style="flex:1;min-height:0">
+            <div class="list">
+              <div class="head">
+                <i class="fas fa-magnifying-glass"></i>
+                <input class="input" id="chatFilter" placeholder="Buscar chats..." oninput="renderChats()" style="padding:8px 10px">
+              </div>
+              <div class="items" id="chatItems"></div>
+            </div>
+            <div class="msgbox">
+              <div class="head">
+                <button class="btn back" type="button" onclick="backToList()"><i class="fas fa-arrow-left"></i><span>Voltar</span></button>
+                <div style="font-weight:1000;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="chatTitle">Selecione um chat</div>
+                <div class="sp"></div>
+                <button class="btn" type="button" onclick="reloadMessages()"><i class="fas fa-rotate"></i><span>Atualizar</span></button>
+              </div>
+              <div class="msgs" id="msgs"></div>
+              <div class="composer">
+                <input class="input" id="msgInput" placeholder="Digite uma mensagem..." onkeydown="if(event.key==='Enter'){sendMsg()}">
+                <button class="btn primary" type="button" onclick="sendMsg()"><i class="fas fa-paper-plane"></i><span>Enviar</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="login" id="loginRoot">
+    <div class="h">Acesso Administrativo</div>
+    <div class="b">
+      <div class="muted" style="line-height:1.4">Use as credenciais do Admin Geral (SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD configurados no servidor).</div>
+      <div>
+        <div style="font-weight:900;margin-bottom:6px">Email</div>
+        <input class="input" id="loginEmail" type="email" placeholder="email@dominio.com">
+      </div>
+      <div>
+        <div style="font-weight:900;margin-bottom:6px">Senha</div>
+        <input class="input" id="loginPass" type="password" placeholder="Sua senha">
+      </div>
+      <button class="btn primary" type="button" onclick="adminLogin()" style="justify-content:center"><i class="fas fa-right-to-bracket"></i><span>Entrar</span></button>
+      <div id="loginErr" class="muted" style="color:#c0392b; font-weight:800; display:none"></div>
+    </div>
+  </div>
+
+  <div id="qrModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9999; padding:20px;">
+    <div style="max-width: 420px; margin: 6vh auto 0; background: white; border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 10px;">
+        <div style="font-weight:900; color:#111b21;">QR WhatsApp</div>
+        <button class="btn" type="button" onclick="closeQr()" style="padding:8px 10px"><i class="fas fa-xmark"></i><span>Fechar</span></button>
+      </div>
+      <div id="qrLine" class="muted" style="margin-bottom:10px">Carregando...</div>
+      <div style="background:#f7f7f7; border-radius: 14px; padding: 14px; display:flex; align-items:center; justify-content:center; min-height: 320px;">
+        <img id="qrImg" src="" alt="QR Code" style="display:none; width: 280px; height: 280px; object-fit: contain; border-radius: 12px; background:white;">
+        <div id="qrEmpty" class="muted" style="text-align:center">
+          <div style="font-weight:900;color:#111b21;margin-bottom:6px">Aguardando QR...</div>
+          <div style="font-size:.9rem">Clique em “Forçar conectar” se necessário.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ADMIN_TOKEN_KEY = 'zapmro_admin_token';
+    const ADMIN_USER_KEY = 'zapmro_admin_user';
+    let ADMIN_TOKEN = localStorage.getItem(ADMIN_TOKEN_KEY) || '';
+    let OVERVIEW = null;
+    let SELECTED_SESSION = '';
+    let CHATS = [];
+    let SELECTED_CHAT = '';
+    let QR_TIMER = null;
+
+    function showLogin(err) {
+      document.getElementById('appRoot').style.display = 'none';
+      document.getElementById('loginRoot').style.display = 'block';
+      const el = document.getElementById('loginErr');
+      if (err) { el.textContent = err; el.style.display = 'block'; } else { el.style.display = 'none'; }
+    }
+
+    function showApp() {
+      document.getElementById('loginRoot').style.display = 'none';
+      document.getElementById('appRoot').style.display = 'flex';
+    }
+
+    async function adminLogin() {
+      const email = (document.getElementById('loginEmail').value || '').trim();
+      const password = (document.getElementById('loginPass').value || '').toString();
+      if (!email || !password) return showLogin('Email e senha obrigatórios');
+      try {
+        const res = await fetch('/api/auth/login', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ email, password }) });
+        const data = await res.json().catch(()=>({}));
+        if (!res.ok || !data.token) return showLogin(data.error || 'Falha no login');
+        if ((data.user?.role || '') !== 'superadmin') return showLogin('Este usuário não é Admin Geral');
+        ADMIN_TOKEN = data.token;
+        localStorage.setItem(ADMIN_TOKEN_KEY, ADMIN_TOKEN);
+        localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(data.user || {}));
+        await refreshAdmin();
+      } catch {
+        showLogin('Falha no login');
+      }
+    }
+
+    function adminLogout() {
+      ADMIN_TOKEN = '';
+      localStorage.removeItem(ADMIN_TOKEN_KEY);
+      localStorage.removeItem(ADMIN_USER_KEY);
+      OVERVIEW = null;
+      SELECTED_SESSION = '';
+      CHATS = [];
+      SELECTED_CHAT = '';
+      showLogin();
+    }
+
+    function authHeaders() {
+      return { 'Authorization': 'Bearer ' + ADMIN_TOKEN };
+    }
+
+    function fmtDate(v) {
+      const t = Date.parse(v || '');
+      if (!t) return '-';
+      return new Date(t).toLocaleString('pt-BR', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+    }
+
+    function pill(status) {
+      const s = (status || '').toString();
+      if (s === 'connected') return '<span class="pill ok">Conectado</span>';
+      if (s === 'qr') return '<span class="pill warn">QR</span>';
+      if (s === 'initializing' || s === 'connecting') return '<span class="pill warn">Conectando</span>';
+      return '<span class="pill bad">Desconectado</span>';
+    }
+
+    async function refreshAdmin() {
+      if (!ADMIN_TOKEN) return showLogin();
+      try {
+        const res = await fetch('/api/admin/overview', { headers: authHeaders() });
+        const data = await res.json().catch(()=>({}));
+        if (!res.ok || !data.ok) return showLogin(data.error || 'Sessão expirada');
+        OVERVIEW = data;
+        showApp();
+        document.getElementById('tUsers').textContent = String(data.totals?.users ?? 0);
+        document.getElementById('tSessions').textContent = String(data.totals?.sessions ?? 0);
+        document.getElementById('tConnected').textContent = String(data.totals?.sessionsConnected ?? 0);
+        document.getElementById('tContacts').textContent = String(data.totals?.contacts ?? 0);
+        document.getElementById('totalsSmall').textContent = (data.totals?.historyChats ? ('Leads: ' + data.totals.historyChats) : '');
+        renderUsers();
+        renderSessionSelect();
+      } catch {
+        showLogin('Falha ao carregar painel');
+      }
+    }
+
+    function renderUsers() {
+      const q = (document.getElementById('userFilter').value || '').trim().toLowerCase();
+      const tb = document.getElementById('usersTbody');
+      const users = Array.isArray(OVERVIEW?.users) ? OVERVIEW.users : [];
+      const sessions = Array.isArray(OVERVIEW?.sessions) ? OVERVIEW.sessions : [];
+      const wa = OVERVIEW?.waBySession || {};
+      const filtered = users.filter(u => (u.name||'').toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q));
+      tb.innerHTML = filtered.map(u => {
+        const ss = sessions.filter(s => s.userId === u.id);
+        const connected = ss.filter(s => wa[s.id]?.connected).length;
+        const st = u.disabled ? '<span class="pill bad">Desativado</span>' : (connected ? '<span class="pill ok">Ativo</span>' : '<span class="pill warn">Sem WA</span>');
+        const btnDisable = u.disabled
+          ? '<button class="btn" type="button" onclick="setUserDisabled(\\'' + u.id + '\\', false)"><i class="fas fa-toggle-on"></i><span>Ativar</span></button>'
+          : '<button class="btn" type="button" onclick="setUserDisabled(\\'' + u.id + '\\', true)"><i class="fas fa-toggle-off"></i><span>Desativar</span></button>';
+        const btnDelete = '<button class="btn danger" type="button" onclick="deleteUser(\\'' + u.id + '\\', \\'' + (u.email||'') + '\\')"><i class="fas fa-trash"></i><span>Apagar</span></button>';
+        const btnPick = ss.length ? '<button class="btn primary" type="button" onclick="quickPickUser(\\'' + u.id + '\\')"><i class="fas fa-eye"></i><span>Ver</span></button>' : '';
+        return '<tr>' +
+          '<td><div style="font-weight:1000">' + esc(u.name || '-') + '</div><div class="muted" style="font-size:.85rem">' + esc(u.email || '-') + '</div></td>' +
+          '<td>' + esc(fmtDate(u.createdAt)) + '</td>' +
+          '<td>' + esc(fmtDate(u.lastLoginAt)) + '</td>' +
+          '<td>' + st + '<div class="muted" style="font-size:.82rem;margin-top:4px">' + ss.length + ' sessão(ões) • ' + connected + ' conectada(s)</div></td>' +
+          '<td><div class="row-actions">' + btnPick + btnDisable + btnDelete + '</div></td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function renderSessionSelect() {
+      const sel = document.getElementById('sessionSelect');
+      const sessions = Array.isArray(OVERVIEW?.sessions) ? OVERVIEW.sessions : [];
+      sel.innerHTML = '<option value="">Selecione...</option>' + sessions.map(s => {
+        const u = (OVERVIEW.users || []).find(x => x.id === s.userId) || {};
+        const label = (u.email || u.name || s.userId || '').toString() + ' • ' + s.id;
+        return '<option value="' + escAttr(s.id) + '">' + esc(label) + '</option>';
+      }).join('');
+      if (SELECTED_SESSION) sel.value = SELECTED_SESSION;
+      if (SELECTED_SESSION) applySessionInfo();
+    }
+
+    function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',\"'\":'&#039;' }[c]))}
+    function escAttr(s){return esc(s).replace(/\\s+/g,' ')}
+
+    function quickPickUser(userId) {
+      const sessions = Array.isArray(OVERVIEW?.sessions) ? OVERVIEW.sessions : [];
+      const first = sessions.find(s => s.userId === userId);
+      if (first) {
+        document.getElementById('sessionSelect').value = first.id;
+        selectSession(first.id);
+      }
+    }
+
+    async function setUserDisabled(id, disabled) {
+      if (!confirm((disabled ? 'Desativar' : 'Ativar') + ' este usuário?')) return;
+      const res = await fetch('/api/admin/users/' + encodeURIComponent(id) + '/disable', { method:'POST', headers:{...authHeaders(),'content-type':'application/json'}, body: JSON.stringify({ disabled }) });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) return alert(data.error || 'Falha');
+      await refreshAdmin();
+    }
+
+    async function deleteUser(id, email) {
+      if (!confirm('Apagar o usuário ' + (email || id) + '?\\n\\nIsso remove sessões e dados associados.')) return;
+      const res = await fetch('/api/admin/users/' + encodeURIComponent(id), { method:'DELETE', headers: authHeaders() });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) return alert(data.error || 'Falha');
+      await refreshAdmin();
+    }
+
+    function selectSession(sessionId) {
+      SELECTED_SESSION = sessionId || '';
+      CHATS = [];
+      SELECTED_CHAT = '';
+      document.getElementById('chatItems').innerHTML = '';
+      document.getElementById('msgs').innerHTML = '';
+      document.getElementById('chatTitle').textContent = 'Selecione um chat';
+      applySessionInfo();
+      if (SELECTED_SESSION) loadChats();
+    }
+
+    function applySessionInfo() {
+      const wa = OVERVIEW?.waBySession?.[SELECTED_SESSION] || null;
+      const line = document.getElementById('waStatusLine');
+      const num = document.getElementById('waNumber');
+      const leads = document.getElementById('waLeads');
+      const info = document.getElementById('selInfo');
+      if (!SELECTED_SESSION) {
+        line.className = 'pill warn'; line.textContent = '-';
+        num.textContent = '-';
+        leads.textContent = '-';
+        info.textContent = 'Selecione uma sessão';
+        return;
+      }
+      const status = (wa?.status || 'disconnected');
+      line.outerHTML = '<div id="waStatusLine" class="' + (status==='connected'?'pill ok':status==='qr'||status==='initializing'?'pill warn':'pill bad') + '">' + esc(status) + '</div>';
+      document.getElementById('waNumber').textContent = wa?.number || '-';
+      document.getElementById('waLeads').textContent = String(wa?.historyChats ?? 0);
+      info.textContent = SELECTED_SESSION;
+    }
+
+    async function loadChats() {
+      try {
+        const res = await fetch('/api/whatsapp/chats?sessionId=' + encodeURIComponent(SELECTED_SESSION), { headers: authHeaders() });
+        const data = await res.json().catch(()=>[]);
+        CHATS = Array.isArray(data) ? data : [];
+        renderChats();
+      } catch {
+        CHATS = [];
+        renderChats();
+      }
+    }
+
+    function renderChats() {
+      const q = (document.getElementById('chatFilter').value || '').trim().toLowerCase();
+      const list = document.getElementById('chatItems');
+      const filtered = (CHATS || []).filter(c => (c.name||'').toLowerCase().includes(q) || (c.id||'').toLowerCase().includes(q));
+      list.innerHTML = filtered.map(c => {
+        const active = (SELECTED_CHAT === c.id) ? ' active' : '';
+        const unread = Number(c.unread||0);
+        const badge = unread ? (' <span class="pill ok" style="padding:4px 8px;font-size:.75rem">+' + unread + '</span>') : '';
+        const idEnc = encodeURIComponent(c.id || '');
+        const titleEnc = encodeURIComponent(c.name || c.id || '');
+        return '<div class="item' + active + '" onclick="openChat(\\'' + idEnc + '\\', \\'' + titleEnc + '\\')">' +
+          '<div style="font-weight:1000;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(c.name||c.id) + badge + '</div>' +
+          '<div class="muted" style="font-size:.82rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(c.lastMessage?.body || '') + '</div>' +
+        '</div>';
+      }).join('') || '<div class="muted" style="padding:12px">Nenhum chat</div>';
+    }
+
+    function openChat(chatId, title) {
+      let chatIdRaw = (chatId || '').toString();
+      let titleRaw = (title || '').toString();
+      try { chatIdRaw = decodeURIComponent(chatIdRaw); } catch {}
+      try { titleRaw = decodeURIComponent(titleRaw); } catch {}
+      SELECTED_CHAT = chatIdRaw;
+      document.getElementById('chatTitle').textContent = titleRaw || chatIdRaw;
+      document.querySelectorAll('.item').forEach(el => el.classList.remove('active'));
+      const items = Array.from(document.querySelectorAll('.item'));
+      const idx = (CHATS||[]).findIndex(x => x.id === chatIdRaw);
+      if (idx >= 0 && items[idx]) items[idx].classList.add('active');
+      document.body.classList.add('viewer-open');
+      reloadMessages();
+    }
+
+    function backToList() {
+      document.body.classList.remove('viewer-open');
+    }
+
+    async function reloadMessages() {
+      if (!SELECTED_SESSION || !SELECTED_CHAT) return;
+      const box = document.getElementById('msgs');
+      box.innerHTML = '<div class="muted">Carregando...</div>';
+      try {
+        const res = await fetch('/api/whatsapp/messages/' + encodeURIComponent(SELECTED_CHAT) + '?sessionId=' + encodeURIComponent(SELECTED_SESSION), { headers: authHeaders() });
+        const data = await res.json().catch(()=>[]);
+        const msgs = Array.isArray(data) ? data : [];
+        box.innerHTML = msgs.map(m => '<div class="m ' + (m.fromMe ? 'me' : 'them') + '">' + esc(m.body || (m.media?.kind==='audio'?'[Áudio]':m.media?.kind==='image'?'[Imagem]':m.media?.kind==='video'?'[Vídeo]':m.media?.kind==='document'?'[Arquivo]':'') || '') + '</div>').join('') || '<div class="muted">Sem mensagens</div>';
+        box.scrollTop = box.scrollHeight;
+      } catch {
+        box.innerHTML = '<div class="muted">Falha ao carregar</div>';
+      }
+    }
+
+    async function sendMsg() {
+      const inp = document.getElementById('msgInput');
+      const text = (inp.value || '').trim();
+      if (!text || !SELECTED_SESSION || !SELECTED_CHAT) return;
+      inp.value = '';
+      const res = await fetch('/api/whatsapp/send', { method:'POST', headers:{...authHeaders(),'content-type':'application/json'}, body: JSON.stringify({ sessionId: SELECTED_SESSION, to: SELECTED_CHAT, message: text }) });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok || !data.ok) alert(data.error || 'Falha ao enviar');
+      await reloadMessages();
+      await loadChats();
+    }
+
+    async function openQr() {
+      if (!SELECTED_SESSION) return;
+      document.getElementById('qrModal').style.display = 'block';
+      if (QR_TIMER) { clearInterval(QR_TIMER); QR_TIMER = null; }
+      const tick = async () => {
+        try {
+          const st = await fetch('/api/whatsapp/status/' + encodeURIComponent(SELECTED_SESSION), { headers: authHeaders() }).then(r=>r.json()).catch(()=>({}));
+          const qr = await fetch('/api/whatsapp/qr/' + encodeURIComponent(SELECTED_SESSION), { headers: authHeaders() }).then(r=>r.json()).catch(()=>({}));
+          document.getElementById('qrLine').textContent = (st.status === 'connected') ? 'Conectado!' : (st.status === 'qr' ? 'Escaneie o QR no celular' : 'Aguardando...');
+          const has = !!qr.qr;
+          const img = document.getElementById('qrImg');
+          const empty = document.getElementById('qrEmpty');
+          if (has) { img.src = qr.qr; img.style.display='block'; empty.style.display='none'; } else { img.style.display='none'; empty.style.display='block'; }
+          await refreshAdmin();
+        } catch {}
+      };
+      await tick();
+      QR_TIMER = setInterval(tick, 1300);
+    }
+
+    function closeQr() {
+      document.getElementById('qrModal').style.display = 'none';
+      if (QR_TIMER) { clearInterval(QR_TIMER); QR_TIMER = null; }
+    }
+
+    async function forceConnect() {
+      if (!SELECTED_SESSION) return;
+      await fetch('/api/whatsapp/connect', { method:'POST', headers:{...authHeaders(),'content-type':'application/json'}, body: JSON.stringify({ sessionId: SELECTED_SESSION, force: true }) }).catch(()=>{});
+      await refreshAdmin();
+    }
+
+    async function disconnectWa() {
+      if (!SELECTED_SESSION) return;
+      await fetch('/api/whatsapp/disconnect', { method:'POST', headers:{...authHeaders(),'content-type':'application/json'}, body: JSON.stringify({ sessionId: SELECTED_SESSION }) }).catch(()=>{});
+      await refreshAdmin();
+    }
+
+    async function resetWa() {
+      if (!SELECTED_SESSION) return;
+      if (!confirm('Resetar sessão do WhatsApp? Vai pedir QR novamente.')) return;
+      await fetch('/api/whatsapp/reset', { method:'POST', headers:{...authHeaders(),'content-type':'application/json'}, body: JSON.stringify({ sessionId: SELECTED_SESSION }) }).catch(()=>{});
+      await refreshAdmin();
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e && e.key === 'Escape') closeQr();
+    });
+
+    if (ADMIN_TOKEN) refreshAdmin();
+    else showLogin();
+  </script>
+</body>
+</html>`;
+}
+
+route('GET', '/administrativo', (req, res) => {
+  html(res, adminPageHtml());
+});
+route('GET', '/administrativo/', (req, res) => {
+  html(res, adminPageHtml());
+});
+
 route('GET', '/auth/google/callback', async (req, res) => {
   const qs = new URL(req.url, 'http://x').searchParams;
   const code = (qs.get('code') || '').toString();
@@ -803,6 +1388,7 @@ route('POST', '/api/auth/login', async (req, res) => {
   const users = db.load('users');
   const user = users.find(u => u.email === email);
   if (!user) return err(res, 'Usuário não encontrado');
+  if (user.disabled) return err(res, 'Conta desativada', 403);
   if (password) {
     const stored = (user.password || '').toString();
     const isBcrypt = stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$');
@@ -810,9 +1396,10 @@ route('POST', '/api/auth/login', async (req, res) => {
     if (!ok) return err(res, 'Senha incorreta');
     if (!isBcrypt) {
       user.password = bcryptjs.hashSync(password, 10);
-      db.save('users', users);
     }
   }
+  user.lastLoginAt = new Date().toISOString();
+  db.save('users', users);
   json(res, { token: signToken({ id: user.id, email: user.email, role: user.role }), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
@@ -870,6 +1457,162 @@ route('POST', '/api/me/password', async (req, res) => {
   me.updatedAt = new Date().toISOString();
   db.save('users', users);
   json(res, { ok: true });
+});
+
+function countHistoryChatsForSession(sessionId) {
+  try {
+    const dir = join(DATA, 'history');
+    if (!existsSync(dir)) return 0;
+    const prefix = `${String(sessionId || '')}_`;
+    return readdirSync(dir).filter(n => n.startsWith(prefix) && n.endsWith('.json')).length;
+  } catch {
+    return 0;
+  }
+}
+
+route('GET', '/api/admin/overview', (req, res) => {
+  const u = requireSuperAdmin(req, res); if (!u) return;
+  const users = db.load('users', []).map(x => ({
+    id: x.id,
+    name: x.name,
+    email: x.email,
+    role: x.role,
+    disabled: !!x.disabled,
+    createdAt: x.createdAt || null,
+    lastLoginAt: x.lastLoginAt || null,
+    updatedAt: x.updatedAt || null
+  }));
+  const sessions = db.load('sessions', []).map(s => ({
+    id: s.id,
+    userId: s.userId,
+    status: (waStatus.get(s.id) || s.status || 'disconnected'),
+    createdAt: s.createdAt || null
+  }));
+  const contacts = db.load('contacts', []);
+  const contactsBySession = {};
+  for (const c of contacts) {
+    const sid = String(c?.sessionId || '');
+    if (!sid) continue;
+    contactsBySession[sid] = (contactsBySession[sid] || 0) + 1;
+  }
+  const waBySession = {};
+  for (const s of sessions) {
+    const client = waClients.get(s.id);
+    const info = client?.info || null;
+    const number = info?.wid?.user ? `+${String(info.wid.user)}` : null;
+    const pushname = info?.pushname || null;
+    waBySession[s.id] = {
+      status: s.status,
+      connected: !!info,
+      number,
+      pushname,
+      historyChats: countHistoryChatsForSession(s.id),
+      contacts: contactsBySession[s.id] || 0
+    };
+  }
+  const totals = {
+    users: users.length,
+    sessions: sessions.length,
+    sessionsConnected: sessions.filter(s => waBySession[s.id]?.connected).length,
+    contacts: contacts.length,
+    historyChats: Object.values(waBySession).reduce((a, v) => a + (Number(v?.historyChats || 0) || 0), 0)
+  };
+  appendAdminAudit(u.id, 'overview', { totals });
+  json(res, { ok: true, totals, users, sessions, waBySession });
+});
+
+route('POST', '/api/admin/users/:id/disable', (req, res) => {
+  const u = requireSuperAdmin(req, res); if (!u) return;
+  const targetId = req.params.id;
+  const disabled = !!req.body?.disabled;
+  const users = db.load('users', []);
+  const me = users.find(x => x.id === targetId);
+  if (!me) return err(res, 'Not found', 404);
+  if (me.role === 'superadmin' && me.id === u.id && disabled) return err(res, 'Não é possível desativar o próprio superadmin', 400);
+  me.disabled = disabled;
+  me.updatedAt = new Date().toISOString();
+  db.save('users', users);
+  appendAdminAudit(u.id, 'user.disable', { userId: targetId, disabled });
+  json(res, { ok: true });
+});
+
+route('DELETE', '/api/admin/users/:id', async (req, res) => {
+  const u = requireSuperAdmin(req, res); if (!u) return;
+  const targetId = req.params.id;
+  if (targetId === u.id) return err(res, 'Não é possível apagar o próprio superadmin', 400);
+  const users = db.load('users', []);
+  const target = users.find(x => x.id === targetId);
+  if (!target) return err(res, 'Not found', 404);
+  const sessionsAll = db.load('sessions', []);
+  const owned = sessionsAll.filter(s => s.userId === targetId).map(s => s.id);
+  for (const sid of owned) {
+    try { await stopWhatsApp(sid); } catch {}
+    try { rmSync(join(WA_AUTH_DIR, `session-${sid}`), { recursive: true, force: true }); } catch {}
+    try { rmSync(join(WA_MEDIA_DIR, waSafePart(sid)), { recursive: true, force: true }); } catch {}
+    try { rmSync(join(CHAT_MEDIA_DIR, waSafePart(sid)), { recursive: true, force: true }); } catch {}
+    try {
+      const histDir = join(DATA, 'history');
+      if (existsSync(histDir)) {
+        for (const f of readdirSync(histDir)) {
+          if (f.startsWith(`${sid}_`) && f.endsWith('.json')) {
+            try { rmSync(join(histDir, f), { force: true }); } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+  const sessionsNext = sessionsAll.filter(s => s.userId !== targetId);
+  db.save('sessions', sessionsNext);
+
+  const contacts = db.load('contacts', []).filter(c => c.userId !== targetId && !owned.includes(String(c.sessionId || '')));
+  db.save('contacts', contacts);
+
+  const tags = db.load('tags', []).filter(t => !owned.includes(String(t.sessionId || '')));
+  db.save('tags', tags);
+
+  const scheduled = db.load('scheduled_messages', []).filter(s => !owned.includes(String(s.sessionId || '')));
+  db.save('scheduled_messages', scheduled);
+
+  const campaigns = db.load('winback_campaigns', []).filter(c => !owned.includes(String(c.sessionId || '')));
+  db.save('winback_campaigns', campaigns);
+
+  const flows = db.load('flows', {});
+  for (const sid of owned) delete flows[sid];
+  db.save('flows', flows);
+
+  const aiCfg = db.load('ai_config', {});
+  for (const sid of owned) delete aiCfg[sid];
+  db.save('ai_config', aiCfg);
+
+  const kanban = db.load('kanban', {});
+  for (const sid of owned) delete kanban[sid];
+  db.save('kanban', kanban);
+
+  const aiStatus = db.load('ai_chat_status', {});
+  for (const k of Object.keys(aiStatus || {})) {
+    const sid = String(k.split(':')[0] || '');
+    if (owned.includes(sid)) delete aiStatus[k];
+  }
+  db.save('ai_chat_status', aiStatus);
+
+  const aiTrans = db.load('ai_transcripts', {});
+  for (const sid of owned) delete aiTrans[sid];
+  db.save('ai_transcripts', aiTrans);
+
+  const assets = db.load('flow_assets', {});
+  for (const sid of owned) delete assets[sid];
+  db.save('flow_assets', assets);
+
+  const runs = db.load('flow_runs', {});
+  for (const sid of owned) delete runs[sid];
+  db.save('flow_runs', runs);
+
+  const tokens = db.load('auth_tokens', []).filter(t => t.userId !== targetId);
+  db.save('auth_tokens', tokens);
+
+  db.save('users', users.filter(x => x.id !== targetId));
+  appendAdminAudit(u.id, 'user.delete', { userId: targetId, sessions: owned });
+  json(res, { ok: true, removedSessions: owned.length });
 });
 
 function getGoogleTokenItem(userId) {
@@ -941,7 +1684,7 @@ route('POST', '/api/google/sync-contacts/:sessionId', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === req.params.sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const token = await getGoogleAccessToken(u.id);
   const url = new URL('https://people.googleapis.com/v1/people/me/connections');
   url.searchParams.set('personFields', 'names,emailAddresses,phoneNumbers');
@@ -1023,7 +1766,7 @@ route('POST', '/api/whatsapp/connect', async (req, res) => {
   if (!sessionId) return err(res, 'sessionId required');
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   if (hasWA) {
     const status = waStatus.get(sessionId);
     const existing = waClients.get(sessionId);
@@ -1040,13 +1783,17 @@ route('GET', '/api/whatsapp/qr/:sessionId', (req, res) => {
   const sid = req.params.sessionId;
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sid);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   json(res, { status: waStatus.get(sid) || 'disconnected', qr: waLastQr.get(sid)?.qr || '' });
 });
 
 route('POST', '/api/whatsapp/disconnect', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const { sessionId } = req.body;
+  if (!sessionId) return err(res, 'sessionId required', 400);
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   await stopWhatsApp(sessionId);
   json(res, { ok: true });
 });
@@ -1057,7 +1804,7 @@ route('POST', '/api/whatsapp/reset', async (req, res) => {
   if (!sessionId) return err(res, 'sessionId required');
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   try {
     await resetWhatsAppAuth(sessionId);
     json(res, { ok: true });
@@ -1068,10 +1815,12 @@ route('POST', '/api/whatsapp/reset', async (req, res) => {
 
 route('DELETE', '/api/session/:id', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
-  await stopWhatsApp(req.params.id);
-  let sessions = db.load('sessions');
-  sessions = sessions.filter(s => s.id !== req.params.id);
-  db.save('sessions', sessions);
+  const sid = req.params.id;
+  const sessionsAll = db.load('sessions');
+  const s = sessionsAll.find(x => x.id === sid);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  await stopWhatsApp(sid);
+  db.save('sessions', sessionsAll.filter(s => s.id !== sid));
   json(res, { ok: true });
 });
 
@@ -1079,7 +1828,7 @@ route('GET', '/api/whatsapp/status/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === req.params.sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const status = waStatus.get(req.params.sessionId) || s.status || 'disconnected';
   json(res, { status, connected: status === 'connected' });
 });
@@ -1088,7 +1837,7 @@ route('GET', '/api/whatsapp/self/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === req.params.sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const client = waClients.get(req.params.sessionId);
   const info = client?.info || null;
   const connected = !!info;
@@ -1105,7 +1854,7 @@ route('GET', '/api/whatsapp/chats', async (req, res) => {
   const sessionId = qs.get('sessionId');
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return json(res, []);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return json(res, []);
   const client = waClients.get(sessionId);
   if (!client?.info) return json(res, []);
   try {
@@ -1152,7 +1901,7 @@ route('GET', '/api/whatsapp/chat-info/:chatId', async (req, res) => {
   if (!sessionId) return err(res, 'sessionId required', 400);
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected', 400);
 
@@ -1220,7 +1969,7 @@ route('GET', '/api/whatsapp/groups', async (req, res) => {
   const sessionId = qs.get('sessionId');
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return json(res, []);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return json(res, []);
   const client = waClients.get(sessionId);
   if (!client?.info) return json(res, []);
   try {
@@ -1244,7 +1993,7 @@ route('GET', '/api/whatsapp/profile-pics', async (req, res) => {
   const chatIdsParam = qs.get('chatIds') || '';
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return json(res, { pics: {} });
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return json(res, { pics: {} });
   const client = waClients.get(sessionId);
   if (!client?.info) return json(res, { pics: {} });
   const ids = chatIdsParam.split(',').map(x => x.trim()).filter(Boolean).slice(0, 60);
@@ -1277,7 +2026,7 @@ route('GET', '/api/whatsapp/messages/:chatId', async (req, res) => {
 
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
-  if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
 
   const client = waClients.get(sessionId);
   if (!client?.info) return json(res, []);
@@ -1398,7 +2147,12 @@ route('GET', '/api/whatsapp/messages/:chatId', async (req, res) => {
 });
 
 route('POST', '/api/whatsapp/send', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
   const { sessionId, to, message } = req.body;
+  if (!sessionId || !to) return err(res, 'sessionId/to required', 400);
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected');
   try { await client.sendMessage(to, message); json(res, { ok: true }); }
@@ -1421,7 +2175,7 @@ route('POST', '/api/whatsapp/send-media', async (req, res) => {
 
     const sessions = db.load('sessions');
     const s = sessions.find(x => x.id === sessionId);
-    if (!s || (s.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+    if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
     const client = waClients.get(sessionId);
     if (!client?.info) return err(res, 'Session not connected', 400);
     if (!hasWA || !MessageMedia) return err(res, 'Media not supported', 400);
@@ -1505,7 +2259,7 @@ route('POST', '/api/flows/start', async (req, res) => {
   if (!sessionId || !chatId || !flowId) return err(res, 'sessionId/chatId/flowId required', 400);
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected', 400);
 
@@ -1535,7 +2289,7 @@ route('GET', '/api/flows/runs/:sessionId', (req, res) => {
   const sessionId = req.params.sessionId;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return json(res, { runs: [] });
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return json(res, { runs: [] });
   const qs = new URL(req.url, 'http://x').searchParams;
   const chatId = (qs.get('chatId') || '').toString();
   const store = getFlowRunsStore();
@@ -1565,7 +2319,7 @@ route('DELETE', '/api/flows/runs/:sessionId/:runId', (req, res) => {
   const sessionId = req.params.sessionId;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const qs = new URL(req.url, 'http://x').searchParams;
   const chatId = (qs.get('chatId') || '').toString();
   if (!chatId) return err(res, 'chatId required', 400);
@@ -1628,7 +2382,7 @@ route('GET', '/api/ai-config/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const config = db.load('ai_config', {});
   const cfg = config[req.params.sessionId] || { enabled: false, provider: 'openai', model: 'gpt-4o-mini' };
   const { apiKey, ...rest } = (cfg || {});
@@ -1639,7 +2393,7 @@ route('POST', '/api/ai-config/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const config = db.load('ai_config', {});
   const prev = config[req.params.sessionId] || {};
   const body = req.body || {};
@@ -1672,7 +2426,7 @@ route('GET', '/api/ai-chat-status/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const qs = new URL(req.url, 'http://x').searchParams;
   const chatId = (qs.get('chatId') || '').toString();
   const statuses = db.load('ai_chat_status', {});
@@ -1695,7 +2449,7 @@ route('GET', '/api/ai/summary/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const store = db.load('ai_transcripts', {});
   const chats = store?.[req.params.sessionId] || {};
   const kanban = db.load('kanban', {})?.[req.params.sessionId] || null;
@@ -1800,7 +2554,7 @@ route('GET', '/api/contacts/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const contacts = db.load('contacts').filter(c => c.sessionId === req.params.sessionId);
   let changed = false;
   for (const c of contacts) {
@@ -1835,7 +2589,7 @@ route('POST', '/api/contacts/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const contacts = db.load('contacts');
   const id = req.body.id || req.body.waId || uuid();
   const waId = (req.body.waId || req.body.id || id || '').toString();
@@ -1846,7 +2600,33 @@ route('POST', '/api/contacts/:sessionId', (req, res) => {
     const fromName = extractPhoneDigits(req.body.name);
     if (fromName && (!waDigits || fromName !== waDigits)) number = fromName;
   }
-  const contact = { ...req.body, waId: waId || req.body.waId, number: number || null, sessionId: req.params.sessionId, id, updatedAt: new Date().toISOString() };
+  const birthDateRaw = (req.body.birthDate || req.body.birthday || '').toString().trim();
+  let birthDate = null;
+  if (birthDateRaw) {
+    const m = birthDateRaw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return err(res, 'Data de nascimento inválida (use AAAA-MM-DD)', 400);
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    const dt = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+    if (!Number.isFinite(dt.getTime()) || (dt.getUTCFullYear() !== y) || (dt.getUTCMonth() !== (mo - 1)) || (dt.getUTCDate() !== d)) {
+      return err(res, 'Data de nascimento inválida', 400);
+    }
+    birthDate = `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  const nowIso = new Date().toISOString();
+  const existing = contacts.find(c => c.id === id) || null;
+  const contact = {
+    ...req.body,
+    waId: waId || req.body.waId,
+    number: number || null,
+    birthDate,
+    sessionId: req.params.sessionId,
+    userId: sess.userId,
+    id,
+    createdAt: existing?.createdAt || nowIso,
+    updatedAt: nowIso
+  };
   const idx = contacts.findIndex(c => c.id === contact.id);
   if (idx >= 0) contacts[idx] = contact; else contacts.push(contact);
   db.save('contacts', contacts); json(res, contact);
@@ -1857,7 +2637,7 @@ route('GET', '/api/scheduled/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return json(res, []);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return json(res, []);
   json(res, db.load('scheduled_messages').filter(s => s.sessionId === req.params.sessionId));
 });
 
@@ -1866,7 +2646,7 @@ route('POST', '/api/scheduled', (req, res) => {
   const { sessionId } = req.body || {};
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const scheduled = db.load('scheduled_messages');
   const item = { ...req.body, id: req.body.id || uuid(), sent: false, createdAt: new Date().toISOString() };
   scheduled.push(item); db.save('scheduled_messages', scheduled); json(res, item);
@@ -1877,7 +2657,7 @@ route('POST', '/api/scheduled/group-bulk', (req, res) => {
   const { sessionId, targets, payloadType, message, flowId, startTime } = req.body || {};
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const ids = Array.isArray(targets) ? targets.map(x => (x || '').toString()).filter(Boolean) : [];
   if (!ids.length) return err(res, 'Selecione pelo menos 1 grupo');
   const st = Number(startTime || 0);
@@ -1910,6 +2690,58 @@ route('POST', '/api/scheduled/group-bulk', (req, res) => {
   json(res, item);
 });
 
+route('POST', '/api/scheduled/birthday-bulk', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const { sessionId, contactIds, message, timeOfDay } = req.body || {};
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const ids = Array.isArray(contactIds) ? contactIds.map(x => (x || '').toString()).filter(Boolean) : [];
+  if (!ids.length) return err(res, 'Selecione pelo menos 1 contato', 400);
+  const template = (message || '').toString();
+  if (!template.trim()) return err(res, 'Mensagem vazia', 400);
+  const tod = (timeOfDay || '09:00').toString().trim();
+  const m = tod.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return err(res, 'Horário inválido (use HH:MM)', 400);
+  const hh = Math.min(23, Math.max(0, Number(m[1])));
+  const mm = Math.min(59, Math.max(0, Number(m[2])));
+  const contactsAll = db.load('contacts', []).filter(c => c.sessionId === sessionId);
+  const byId = new Map(contactsAll.map(c => [(c.waId || c.id), c]));
+  const now = new Date();
+  const nowTs = now.getTime();
+  const scheduled = db.load('scheduled_messages');
+  let created = 0;
+  for (const cid of ids) {
+    const c = byId.get(cid) || null;
+    const bd = (c?.birthDate || '').toString();
+    const mm2 = bd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!mm2) continue;
+    const month = Number(mm2[2]) - 1;
+    const day = Number(mm2[3]);
+    const year = now.getFullYear();
+    let dt = new Date(year, month, day, hh, mm, 0, 0);
+    if (!Number.isFinite(dt.getTime())) continue;
+    if (dt.getTime() <= nowTs + 60_000) dt = new Date(year + 1, month, day, hh, mm, 0, 0);
+    const ts = Math.floor(dt.getTime() / 1000);
+    const to = (c?.waId || c?.id || '').toString();
+    if (!to) continue;
+    scheduled.push({
+      id: uuid(),
+      sessionId,
+      kind: 'birthday',
+      payloadType: 'text',
+      message: template,
+      to,
+      scheduledTime: ts,
+      sent: false,
+      createdAt: new Date().toISOString()
+    });
+    created += 1;
+  }
+  db.save('scheduled_messages', scheduled);
+  json(res, { ok: true, created });
+});
+
 route('DELETE', '/api/scheduled/:id', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   let items = db.load('scheduled_messages');
@@ -1917,7 +2749,7 @@ route('DELETE', '/api/scheduled/:id', (req, res) => {
   if (!found) return json(res, { ok: true });
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === found.sessionId);
-  if (!sess || (sess.userId !== u.id && u.role !== 'admin')) return err(res, 'Forbidden', 403);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   items = items.filter(x => x.id !== req.params.id);
   db.save('scheduled_messages', items);
   json(res, { ok: true });
@@ -1926,13 +2758,68 @@ route('DELETE', '/api/scheduled/:id', (req, res) => {
 // ── WinBack ───────────────────────────────────────────────────────────
 route('GET', '/api/winback/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === req.params.sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   json(res, db.load('winback_campaigns').filter(c => c.sessionId === req.params.sessionId));
 });
 
 route('POST', '/api/winback', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
-  const campaigns = db.load('winback_campaigns');
-  const campaign = { ...req.body, id: req.body.id || uuid(), createdAt: new Date().toISOString() };
+  const sessionId = (req.body?.sessionId || '').toString();
+  if (!sessionId) return err(res, 'sessionId required', 400);
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const campaigns = db.load('winback_campaigns', []);
+  const existing = campaigns.find(c => c.id === req.body.id) || null;
+  const nowIso = new Date().toISOString();
+  const recipientsRaw = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+  const uniq = new Map();
+  for (const r of recipientsRaw) {
+    const chatId = (r?.chatId || r?.id || r || '').toString();
+    if (!chatId) continue;
+    if (uniq.has(chatId)) continue;
+    uniq.set(chatId, {
+      chatId,
+      name: (r?.name || '').toString(),
+      addedAt: r?.addedAt || nowIso,
+      firstSentAt: r?.firstSentAt || null,
+      lastSentAt: r?.lastSentAt || null,
+      sentCount: Number(r?.sentCount || 0),
+      respondedAt: r?.respondedAt || null
+    });
+  }
+  const recipients = Array.from(uniq.values()).slice(0, 100);
+  if (recipients.length > 100) return err(res, 'Máximo 100 contatos por Winback', 400);
+  const startedAt = existing?.startedAt || req.body?.startedAt || null;
+  const durationDays = Number(req.body?.durationDays || existing?.durationDays || 7);
+  if (startedAt) {
+    const startTs = Date.parse(startedAt) || 0;
+    const windowEnd = startTs ? (startTs + Math.max(1, durationDays) * 24 * 3600 * 1000) : 0;
+    if (windowEnd && Date.now() < windowEnd) {
+      const prev = new Set((existing?.recipients || []).map(x => (x?.chatId || '').toString()).filter(Boolean));
+      for (const r of recipients) {
+        if (!prev.has(r.chatId)) return err(res, 'Não é possível adicionar novos contatos após iniciar (aguarde 7 dias)', 400);
+      }
+    }
+  }
+  const campaign = {
+    ...existing,
+    ...req.body,
+    id: req.body.id || uuid(),
+    sessionId,
+    userId: sess.userId,
+    name: (req.body?.name || existing?.name || 'Winback').toString(),
+    message: (req.body?.message || existing?.message || '').toString(),
+    recipients,
+    intervalHours: Number(req.body?.intervalHours || existing?.intervalHours || 4),
+    durationDays,
+    maxRecipients: 100,
+    active: !!req.body?.active,
+    createdAt: existing?.createdAt || nowIso,
+    updatedAt: nowIso
+  };
   const idx = campaigns.findIndex(c => c.id === campaign.id);
   if (idx >= 0) campaigns[idx] = campaign; else campaigns.push(campaign);
   db.save('winback_campaigns', campaigns); json(res, campaign);
@@ -1940,8 +2827,98 @@ route('POST', '/api/winback', (req, res) => {
 
 route('DELETE', '/api/winback/:id', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
-  let c = db.load('winback_campaigns');
+  let c = db.load('winback_campaigns', []);
+  const found = c.find(x => x.id === req.params.id) || null;
+  if (!found) return json(res, { ok: true });
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === found.sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   db.save('winback_campaigns', c.filter(x => x.id !== req.params.id)); json(res, { ok: true });
+});
+
+route('POST', '/api/winback/start/:id', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const campaigns = db.load('winback_campaigns', []);
+  const idx = campaigns.findIndex(x => x.id === req.params.id);
+  if (idx < 0) return err(res, 'Not found', 404);
+  const found = campaigns[idx];
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === found.sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  found.active = true;
+  if (!found.startedAt) found.startedAt = new Date().toISOString();
+  found.updatedAt = new Date().toISOString();
+  campaigns[idx] = found;
+  db.save('winback_campaigns', campaigns);
+  json(res, { ok: true, campaign: found });
+});
+
+route('POST', '/api/winback/stop/:id', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const campaigns = db.load('winback_campaigns', []);
+  const idx = campaigns.findIndex(x => x.id === req.params.id);
+  if (idx < 0) return err(res, 'Not found', 404);
+  const found = campaigns[idx];
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === found.sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  found.active = false;
+  found.updatedAt = new Date().toISOString();
+  campaigns[idx] = found;
+  db.save('winback_campaigns', campaigns);
+  json(res, { ok: true, campaign: found });
+});
+
+route('GET', '/api/winback/draft/:sessionId', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === req.params.sessionId);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const id = `draft_${req.params.sessionId}`;
+  const campaigns = db.load('winback_campaigns', []);
+  const found = campaigns.find(x => x.id === id) || null;
+  json(res, found || { id, sessionId: req.params.sessionId, type: 'draft', recipients: [], active: false });
+});
+
+route('POST', '/api/winback/draft/add', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const { sessionId, chatId } = req.body || {};
+  const sid = (sessionId || '').toString();
+  const cid = (chatId || '').toString();
+  if (!sid || !cid) return err(res, 'sessionId/chatId required', 400);
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === sid);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const contacts = db.load('contacts', []).filter(c => c.sessionId === sid);
+  const contact = contacts.find(c => (c.waId || c.id) === cid) || null;
+  const name = (req.body?.name || contact?.name || '').toString();
+  const nowIso = new Date().toISOString();
+  const id = `draft_${sid}`;
+  const campaigns = db.load('winback_campaigns', []);
+  let draft = campaigns.find(x => x.id === id) || { id, sessionId: sid, userId: sess.userId, type: 'draft', name: 'Rascunho', message: '', recipients: [], active: false, createdAt: nowIso };
+  const rec = Array.isArray(draft.recipients) ? draft.recipients : [];
+  if (!rec.find(r => (r?.chatId || r?.id || '') === cid)) rec.push({ chatId: cid, name, addedAt: nowIso, firstSentAt: null, lastSentAt: null, sentCount: 0, respondedAt: null });
+  draft.recipients = rec.slice(0, 100);
+  draft.updatedAt = nowIso;
+  const idx = campaigns.findIndex(x => x.id === id);
+  if (idx >= 0) campaigns[idx] = draft; else campaigns.push(draft);
+  db.save('winback_campaigns', campaigns);
+
+  const kanban = db.load('kanban', {});
+  const board = kanban[sid] || null;
+  if (board && Array.isArray(board.columns)) {
+    let col = board.columns.find(x => x.id === 'winback');
+    if (!col) {
+      col = { id: 'winback', name: 'Winback', color: '#8e44ad', chats: [] };
+      board.columns.push(col);
+    }
+    if (!Array.isArray(col.chats)) col.chats = [];
+    if (!col.chats.includes(cid)) col.chats.push(cid);
+    kanban[sid] = board;
+    db.save('kanban', kanban);
+  }
+
+  json(res, { ok: true, draft });
 });
 
 // ── Stats ─────────────────────────────────────────────────────────────
@@ -2163,6 +3140,24 @@ function saveWAMediaToPublic(sessionId, chatId, msgId, media) {
   return { url: '/' + rel, mime, filename: filename || baseName, size: buf.length, kind: waKindFromMime(mime) };
 }
 
+function markWinbackResponded(sessionId, chatId) {
+  try {
+    const campaigns = db.load('winback_campaigns', []);
+    let changed = false;
+    for (const c of campaigns) {
+      if (!c || !c.active) continue;
+      if ((c.sessionId || '') !== sessionId) continue;
+      const recipients = Array.isArray(c.recipients) ? c.recipients : [];
+      const r = recipients.find(x => (x?.chatId || x?.id || '') === chatId) || null;
+      if (!r || r.respondedAt) continue;
+      r.respondedAt = new Date().toISOString();
+      c.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+    if (changed) db.save('winback_campaigns', campaigns);
+  } catch {}
+}
+
 async function initWhatsApp(sessionId, userId) {
   if (!hasWA) return;
   if (waInitLocks.has(sessionId)) return;
@@ -2223,6 +3218,7 @@ async function initWhatsApp(sessionId, userId) {
     addToHistory(sessionId, chatId, msgData);
     if (io) io.to(sessionId).emit('new-message', { sessionId, chatId, message: msgData });
     if (!msg.fromMe) {
+      markWinbackResponded(sessionId, chatId);
       handleFlows(sessionId, chatId, msg, client, userId).catch(() => {});
       handleAIDebounced(sessionId, userId, chatId, msg, client);
     }
@@ -2768,6 +3764,19 @@ if (hasCron) {
     return a + Math.floor(Math.random() * (b - a + 1));
   }
 
+  function renderTemplateForChat(sessionId, chatId, template) {
+    const t = (template ?? '').toString();
+    if (!t) return '';
+    const contacts = db.load('contacts', []).filter(c => c.sessionId === sessionId);
+    const found = contacts.find(c => (c.waId || c.id) === chatId) || null;
+    const full = ((found?.name || '').toString().trim()) || '';
+    const first = full.split(/\s+/).filter(Boolean)[0] || full;
+    return t
+      .replace(/\[\s*username\s*\]/gi, full || first || '')
+      .replace(/\{\{\s*name\s*\}\}/gi, full || first || '')
+      .replace(/\{\{\s*first_name\s*\}\}/gi, first || full || '');
+  }
+
   async function sendScheduledPayload(item, client, chatId) {
     const payloadType = item.payloadType || (item.flowId ? 'flow' : 'text');
     if (payloadType === 'flow') {
@@ -2775,9 +3784,89 @@ if (hasCron) {
       if (flowId) await startFlowById(item.sessionId, chatId, flowId, client);
       return;
     }
-    const message = (item.message ?? item.msg ?? '').toString();
+    const message = renderTemplateForChat(item.sessionId, chatId, (item.message ?? item.msg ?? '').toString());
     if (!message.trim()) return;
     try { await client.sendMessage(chatId, message); } catch {}
+  }
+
+  function normalizeWinbackCampaign(c) {
+    const campaign = c || {};
+    const intervalHours = Number(campaign.intervalHours || 4);
+    const durationDays = Number(campaign.durationDays || 7);
+    const maxRecipients = Number(campaign.maxRecipients || 100);
+    const recipients = Array.isArray(campaign.recipients) ? campaign.recipients : [];
+    const uniq = new Map();
+    for (const r of recipients) {
+      const chatId = (r?.chatId || r?.id || r || '').toString();
+      if (!chatId) continue;
+      if (uniq.has(chatId)) continue;
+      uniq.set(chatId, {
+        chatId,
+        name: (r?.name || '').toString(),
+        addedAt: r?.addedAt || null,
+        firstSentAt: r?.firstSentAt || null,
+        lastSentAt: r?.lastSentAt || null,
+        sentCount: Number(r?.sentCount || 0),
+        respondedAt: r?.respondedAt || null
+      });
+    }
+    return {
+      ...campaign,
+      intervalHours: Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours : 4,
+      durationDays: Number.isFinite(durationDays) && durationDays > 0 ? durationDays : 7,
+      maxRecipients: Number.isFinite(maxRecipients) && maxRecipients > 0 ? maxRecipients : 100,
+      recipients: Array.from(uniq.values())
+    };
+  }
+
+  async function tickWinback(nowSec) {
+    const campaigns = db.load('winback_campaigns', []);
+    let changed = false;
+    for (let i = 0; i < campaigns.length; i++) {
+      let c = normalizeWinbackCampaign(campaigns[i]);
+      if (!c.active) continue;
+      const sessionId = (c.sessionId || '').toString();
+      if (!sessionId) continue;
+      const client = waClients.get(sessionId);
+      if (!client?.info) continue;
+      const startedAt = Date.parse(c.startedAt || '') || 0;
+      const startSec = startedAt ? Math.floor(startedAt / 1000) : 0;
+      const durationSec = Math.floor((Number(c.durationDays || 7) * 24 * 3600));
+      if (!startSec) {
+        c.startedAt = new Date().toISOString();
+        changed = true;
+      }
+      const startSec2 = startSec || nowSec;
+      const endSec = startSec2 + durationSec;
+      if (nowSec >= endSec) {
+        c.active = false;
+        c.endedAt = new Date().toISOString();
+        campaigns[i] = c;
+        changed = true;
+        continue;
+      }
+      const intervalSec = Math.floor((Number(c.intervalHours || 4) * 3600));
+      const template = (c.message || '').toString();
+      if (!template.trim()) continue;
+      for (const r of c.recipients) {
+        if (r.respondedAt) continue;
+        const last = Date.parse(r.lastSentAt || '') || 0;
+        const lastSec = last ? Math.floor(last / 1000) : 0;
+        if (lastSec && (nowSec - lastSec) < intervalSec) continue;
+        const chatId = (r.chatId || '').toString();
+        if (!chatId) continue;
+        const msg = renderTemplateForChat(sessionId, chatId, template);
+        if (!msg.trim()) continue;
+        try { await client.sendMessage(chatId, msg); } catch { continue; }
+        const nowIso = new Date().toISOString();
+        if (!r.firstSentAt) r.firstSentAt = nowIso;
+        r.lastSentAt = nowIso;
+        r.sentCount = Number(r.sentCount || 0) + 1;
+        changed = true;
+      }
+      campaigns[i] = c;
+    }
+    if (changed) db.save('winback_campaigns', campaigns);
   }
 
   cron.schedule('*/10 * * * * *', async () => {
@@ -2836,6 +3925,7 @@ if (hasCron) {
     }
 
     if (changed) db.save('scheduled_messages', scheduled);
+    await tickWinback(now);
   });
   console.log('✅ Cron scheduler initialized');
 }

@@ -1187,6 +1187,7 @@
 
       #userMenuModal [style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
       #ai-page [style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
+      #winback-page [style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
     }
 
     @media (max-width: 480px) {
@@ -1247,6 +1248,10 @@
       <div class="nav-item" onclick="switchPage('crm')">
         <i class="fas fa-kanban"></i>
         <span>CRM Kanban</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('winback')">
+        <i class="fas fa-rotate-left"></i>
+        <span>Winback</span>
       </div>
       <div class="nav-item" onclick="switchPage('flows')">
         <i class="fas fa-project-diagram"></i>
@@ -1386,6 +1391,9 @@
                 <div class="chat-header-actions">
                   <button class="chat-header-btn" id="saveContactBtn" title="Salvar contato" onclick="saveCurrentChatAsContact()" style="display:none">
                     <i class="fas fa-user-plus"></i>
+                  </button>
+                  <button class="chat-header-btn" id="winbackAddBtn" title="Adicionar ao Winback" onclick="addSelectedChatToWinbackDraft()" style="display:none">
+                    <i class="fas fa-rotate-left"></i>
                   </button>
                   <button class="chat-ai-btn" id="chatAiBtn" title="Agente IA (clique para ativar/desativar)" onclick="toggleAIForChat()">
                     <i class="fas fa-robot"></i>
@@ -1699,6 +1707,7 @@
             <div class="sched-tabs">
               <button class="sched-tab active" data-sched-tab="private" onclick="switchSchedTab('private')">Privado</button>
               <button class="sched-tab" data-sched-tab="groups" onclick="switchSchedTab('groups')">Grupos</button>
+              <button class="sched-tab" data-sched-tab="birthdays" onclick="switchSchedTab('birthdays')">Aniversários</button>
               <button class="sched-tab" data-sched-tab="list" onclick="switchSchedTab('list')">Agendados</button>
             </div>
 
@@ -1764,6 +1773,92 @@
                 <button class="btn-secondary-c" onclick="loadScheduledList()">Atualizar</button>
               </div>
               <div id="scheduledList" class="scheduled-list"></div>
+            </div>
+
+            <div id="sched-birthdays" class="sched-pane" style="display:none">
+              <div class="sched-grid">
+                <div class="sched-box">
+                  <div class="sched-title">Contatos com aniversário</div>
+                  <div class="sched-group-actions">
+                    <button class="btn-secondary-c" onclick="selectAllBirthdayContacts(true)">Selecionar todos</button>
+                    <button class="btn-secondary-c" onclick="selectAllBirthdayContacts(false)">Limpar</button>
+                  </div>
+                  <div id="sched-bday-list" class="sched-group-list"></div>
+                  <div class="sched-hint">Use [username] para personalizar o nome em cada mensagem.</div>
+                </div>
+                <div class="sched-box">
+                  <div class="sched-title">Mensagem</div>
+                  <textarea id="sched-bday-text" placeholder="Ex: Olá [username], feliz aniversário! 🎉"></textarea>
+                </div>
+                <div class="sched-box">
+                  <div class="sched-title">Horário do envio</div>
+                  <input id="sched-bday-time" type="time" value="09:00">
+                  <button class="btn-primary-c" style="width:100%; justify-content:center; margin-top:10px;" onclick="saveBirthdaySchedule()">Agendar aniversários</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="winback-page">
+        <div class="page-header">
+          <h1>Winback</h1>
+          <p>Recuperação de vendas: até 100 contatos, envio automático a cada 4 horas por até 7 dias</p>
+        </div>
+
+        <div style="display:grid; gap: 20px; grid-template-columns: 1fr 1fr;">
+          <div class="card">
+            <div class="card-header">
+              <i class="fas fa-list-check" style="margin-right: 10px;"></i> Rascunho (contatos)
+            </div>
+            <div class="card-body">
+              <div class="text-muted" style="font-size:0.85rem; margin-bottom:10px;">No chat, clique no ícone Winback para adicionar o contato aqui.</div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                <button class="btn-secondary-c" onclick="loadWinbackDraft()">Atualizar</button>
+                <button class="btn-primary-c" onclick="createWinbackFromDraft()">Criar campanha</button>
+              </div>
+              <div id="winbackDraftList" class="scheduled-list"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <i class="fas fa-rotate-left" style="margin-right: 10px;"></i> Campanhas
+            </div>
+            <div class="card-body">
+              <div style="display:grid; gap: 12px;">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                  <div>
+                    <div style="font-weight:800; margin-bottom:6px;">Nome</div>
+                    <input class="contact-input" id="winbackName" placeholder="Winback Semana 1">
+                  </div>
+                  <div>
+                    <div style="font-weight:800; margin-bottom:6px;">Intervalo</div>
+                    <select class="contact-input" id="winbackInterval">
+                      <option value="4">A cada 4 horas</option>
+                      <option value="6">A cada 6 horas</option>
+                      <option value="12">A cada 12 horas</option>
+                      <option value="24">1x por dia</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-weight:800; margin-bottom:6px;">Mensagem (use [username])</div>
+                  <textarea class="contact-input contact-textarea" id="winbackMessage" placeholder="Digite a mensagem..."></textarea>
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                  <button class="btn-secondary-c" onclick="loadWinbackCampaigns()">Atualizar lista</button>
+                  <button class="btn-primary-c" onclick="saveWinbackCampaign()">Salvar</button>
+                  <button class="btn-secondary-c" onclick="startSelectedWinback()">Iniciar</button>
+                  <button class="btn-secondary-c" onclick="stopSelectedWinback()">Pausar</button>
+                  <button class="btn-danger-c" onclick="deleteSelectedWinback()">Apagar</button>
+                </div>
+              </div>
+              <div style="height:12px"></div>
+              <div id="winbackCampaignList" class="scheduled-list"></div>
+              <div style="height:10px"></div>
+              <div class="text-muted" id="winbackStatsHint" style="font-size:0.85rem;"></div>
             </div>
           </div>
         </div>
@@ -1901,6 +1996,10 @@
         <div style="font-weight:800; color:#111b21; margin-bottom: 6px;">Observação</div>
         <textarea class="contact-input contact-textarea" id="saveContactNote" placeholder="Ex: prefere contato no período da tarde..."></textarea>
       </div>
+      <div style="margin-top: 10px;">
+        <div style="font-weight:800; color:#111b21; margin-bottom: 6px;">Data de nascimento</div>
+        <input class="contact-input" id="saveContactBirthDate" type="date">
+      </div>
       <div style="display:flex; gap:10px; margin-top: 14px;">
         <button class="btn-secondary-c" style="flex:1; justify-content:center;" onclick="closeSaveContactModal()">Cancelar</button>
         <button class="btn-primary-c" style="flex:1; justify-content:center;" onclick="submitSaveContact()">Salvar</button>
@@ -1984,11 +2083,16 @@
     let SCHED_BOUND = false;
     let KANBAN_CACHE = null;
     let KANBAN_CONTACTS = [];
+    let WINBACK_DRAFT = null;
+    let WINBACK_CAMPAIGNS = [];
+    let WINBACK_SELECTED_ID = null;
+    let BDAY_CONTACTS = [];
     const icons = {
       'dashboard': 'fa-home',
       'chats': 'fa-comments',
       'contacts': 'fa-address-book',
       'crm': 'fa-kanban',
+      'winback': 'fa-rotate-left',
       'flows': 'fa-project-diagram',
       'ai': 'fa-robot',
       'events': 'fa-calendar',
@@ -2537,6 +2641,7 @@
         'chats': 'Chats',
         'contacts': 'Contatos',
         'crm': 'CRM Kanban',
+        'winback': 'Winback',
         'flows': 'Fluxos de Automação',
         'ai': 'IA Agente',
         'events': 'Agendamentos',
@@ -2549,6 +2654,7 @@
       if (pageId === 'contacts') loadRealContacts();
       if (pageId === 'crm') loadKanban();
       if (pageId === 'ai') { loadAIConfig(); loadAIHistorySummary(); }
+      if (pageId === 'winback') { loadWinbackDraft(); loadWinbackCampaigns(); }
       setChatMobileOpen(false);
       if (isMobileViewport()) closeSidebar();
     }
@@ -3499,6 +3605,7 @@
       const pane = document.getElementById(`sched-${tab}`);
       if (pane) pane.style.display = 'block';
       if (tab === 'list') loadScheduledList();
+      if (tab === 'birthdays') loadBirthdayContacts();
     }
 
     function toLocalInputValue(ms) {
@@ -3871,10 +3978,14 @@
           picEl.src = pic || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=128c7e&color=fff`;
         }
         if (saveBtn) saveBtn.style.display = isGroup ? 'none' : 'inline-flex';
+        const winbackBtn = document.getElementById('winbackAddBtn');
+        if (winbackBtn) winbackBtn.style.display = isGroup ? 'none' : 'inline-flex';
       } catch {
         if (selectedChatId !== chatId) return;
         if (statusEl) statusEl.textContent = 'Online agora';
         if (saveBtn) saveBtn.style.display = String(chatId).includes('@g.us') ? 'none' : 'inline-flex';
+        const winbackBtn = document.getElementById('winbackAddBtn');
+        if (winbackBtn) winbackBtn.style.display = String(chatId).includes('@g.us') ? 'none' : 'inline-flex';
         if (picEl) {
           const n = (fallbackName || chatId).toString();
           picEl.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(n)}&background=128c7e&color=fff`;
@@ -3895,6 +4006,7 @@
       const numEl = document.getElementById('saveContactNumber');
       const nameInput = document.getElementById('saveContactName');
       const noteInput = document.getElementById('saveContactNote');
+      const birthInput = document.getElementById('saveContactBirthDate');
       const waId = (selectedChatId || '').toString();
       let number = (selectedChatInfo?.number || parseNumberFromChatId(selectedChatId) || '').toString().replace(/\D+/g, '');
       const idDigits = parseNumberFromChatId(selectedChatId);
@@ -3910,6 +4022,10 @@
         nameInput.value = (!raw || (number && rawDigits === number)) ? '' : raw;
       }
       if (noteInput) noteInput.value = '';
+      if (birthInput) {
+        const existing = (CONTACTS_CACHE || []).find(c => (c.id || c.waId) === selectedChatId) || null;
+        birthInput.value = (existing?.birthDate || existing?.birthday || '') || '';
+      }
       modal.style.display = 'block';
       setTimeout(() => { try { nameInput?.focus(); } catch {} }, 50);
     }
@@ -3924,8 +4040,10 @@
       if (!selectedChatInfo || selectedChatInfo.isGroup) return;
       const nameInput = document.getElementById('saveContactName');
       const noteInput = document.getElementById('saveContactNote');
+      const birthInput = document.getElementById('saveContactBirthDate');
       const name = (nameInput?.value || '').toString().trim();
       const note = (noteInput?.value || '').toString().trim();
+      const birthDate = (birthInput?.value || '').toString().trim();
       if (!name) return alert('Informe o nome do contato');
       try {
         const token = localStorage.getItem('token');
@@ -3936,6 +4054,7 @@
           name,
           note: note || null,
           number: number || null,
+          birthDate: birthDate || null,
           pic: selectedChatInfo.pic || null
         };
         const res = await fetch(`/api/contacts/${encodeURIComponent(currentSessionId)}`, {
@@ -3950,6 +4069,248 @@
         alert('Contato salvo!');
       } catch {
         alert('Falha ao salvar contato');
+      }
+    }
+
+    async function addSelectedChatToWinbackDraft() {
+      if (!currentSessionId || !selectedChatId) return;
+      if (selectedChatInfo?.isGroup) return alert('Winback é apenas para contatos (não grupos)');
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/winback/draft/add', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId, chatId: selectedChatId, name: selectedChatInfo?.name || '' })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao adicionar ao Winback');
+        WINBACK_DRAFT = data.draft || null;
+        document.getElementById('winbackAddBtn') && (document.getElementById('winbackAddBtn').style.display = 'inline-flex');
+        alert('Adicionado ao Winback (rascunho).');
+      } catch {
+        alert('Falha ao adicionar ao Winback');
+      }
+    }
+
+    async function loadWinbackDraft() {
+      const el = document.getElementById('winbackDraftList');
+      if (!el) return;
+      if (!currentSessionId) { el.innerHTML = '<div class="text-muted" style="padding:12px;">Selecione uma sessão do WhatsApp.</div>'; return; }
+      el.innerHTML = '<div class="text-muted" style="padding:12px;">Carregando...</div>';
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/winback/draft/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        WINBACK_DRAFT = data || null;
+      } catch {
+        WINBACK_DRAFT = null;
+      }
+      const rec = Array.isArray(WINBACK_DRAFT?.recipients) ? WINBACK_DRAFT.recipients : [];
+      el.innerHTML = rec.map(r => `
+        <div class="scheduled-item">
+          <div class="info">
+            <div class="title">${escapeHtml(r.name || r.chatId || '')}</div>
+            <div class="meta">${escapeHtml(r.chatId || '')}</div>
+          </div>
+          <div class="actions"></div>
+        </div>
+      `).join('') || '<div class="text-muted" style="padding:12px;">Nenhum contato no rascunho.</div>';
+    }
+
+    async function createWinbackFromDraft() {
+      if (!currentSessionId) return;
+      const rec = Array.isArray(WINBACK_DRAFT?.recipients) ? WINBACK_DRAFT.recipients : [];
+      if (!rec.length) return alert('Adicione contatos no rascunho primeiro.');
+      const name = (document.getElementById('winbackName')?.value || '').toString().trim() || 'Winback';
+      const intervalHours = Number(document.getElementById('winbackInterval')?.value || 4);
+      const message = (document.getElementById('winbackMessage')?.value || '').toString();
+      if (!message.trim()) return alert('Digite a mensagem do Winback.');
+      try {
+        const token = localStorage.getItem('token');
+        const body = { sessionId: currentSessionId, name, message, intervalHours, durationDays: 7, recipients: rec, active: false };
+        const res = await fetch('/api/winback', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao criar campanha');
+        WINBACK_SELECTED_ID = data.id;
+        await loadWinbackCampaigns();
+        alert('Campanha criada. Clique em Iniciar para começar.');
+      } catch {
+        alert('Falha ao criar campanha');
+      }
+    }
+
+    async function loadWinbackCampaigns() {
+      const el = document.getElementById('winbackCampaignList');
+      if (!el) return;
+      if (!currentSessionId) { el.innerHTML = '<div class="text-muted" style="padding:12px;">Selecione uma sessão do WhatsApp.</div>'; return; }
+      el.innerHTML = '<div class="text-muted" style="padding:12px;">Carregando...</div>';
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/winback/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ([]));
+        WINBACK_CAMPAIGNS = Array.isArray(data) ? data.filter(c => (c.type || '') !== 'draft') : [];
+      } catch {
+        WINBACK_CAMPAIGNS = [];
+      }
+      el.innerHTML = WINBACK_CAMPAIGNS.map(c => {
+        const rec = Array.isArray(c.recipients) ? c.recipients : [];
+        const totalSent = rec.reduce((a, r) => a + (Number(r.sentCount || 0) || 0), 0);
+        const responded = rec.filter(r => r.respondedAt).length;
+        const active = !!c.active;
+        const sel = (WINBACK_SELECTED_ID === c.id) ? ' style="border:1px solid var(--primary);"' : '';
+        return `
+          <div class="scheduled-item" ${sel} onclick="selectWinbackCampaign('${escapeHtml(c.id)}')">
+            <div class="info">
+              <div class="title">${escapeHtml(c.name || 'Winback')}</div>
+              <div class="meta">${active ? 'Ativo' : 'Pausado'} • ${rec.length} contato(s) • Envios: ${totalSent} • Respostas: ${responded}</div>
+            </div>
+            <div class="actions"></div>
+          </div>
+        `;
+      }).join('') || '<div class="text-muted" style="padding:12px;">Nenhuma campanha.</div>';
+      updateWinbackStatsHint();
+    }
+
+    function selectWinbackCampaign(id) {
+      WINBACK_SELECTED_ID = id;
+      const c = (WINBACK_CAMPAIGNS || []).find(x => x.id === id) || null;
+      if (!c) return;
+      const nameEl = document.getElementById('winbackName');
+      const msgEl = document.getElementById('winbackMessage');
+      const intEl = document.getElementById('winbackInterval');
+      if (nameEl) nameEl.value = c.name || '';
+      if (msgEl) msgEl.value = c.message || '';
+      if (intEl) intEl.value = String(Number(c.intervalHours || 4));
+      loadWinbackCampaigns();
+    }
+
+    async function saveWinbackCampaign() {
+      if (!currentSessionId) return;
+      const c = (WINBACK_CAMPAIGNS || []).find(x => x.id === WINBACK_SELECTED_ID) || null;
+      if (!c) return alert('Selecione uma campanha.');
+      const name = (document.getElementById('winbackName')?.value || '').toString().trim() || 'Winback';
+      const intervalHours = Number(document.getElementById('winbackInterval')?.value || 4);
+      const message = (document.getElementById('winbackMessage')?.value || '').toString();
+      if (!message.trim()) return alert('Digite a mensagem do Winback.');
+      try {
+        const token = localStorage.getItem('token');
+        const body = { ...c, sessionId: currentSessionId, name, intervalHours, message };
+        const res = await fetch('/api/winback', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao salvar');
+        await loadWinbackCampaigns();
+        alert('Salvo!');
+      } catch {
+        alert('Falha ao salvar');
+      }
+    }
+
+    async function startSelectedWinback() {
+      const id = (WINBACK_SELECTED_ID || '').toString();
+      if (!id) return alert('Selecione uma campanha.');
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/winback/start/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao iniciar');
+        await loadWinbackCampaigns();
+        alert('Winback iniciado.');
+      } catch {
+        alert('Falha ao iniciar');
+      }
+    }
+
+    async function stopSelectedWinback() {
+      const id = (WINBACK_SELECTED_ID || '').toString();
+      if (!id) return alert('Selecione uma campanha.');
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/winback/stop/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao pausar');
+        await loadWinbackCampaigns();
+        alert('Winback pausado.');
+      } catch {
+        alert('Falha ao pausar');
+      }
+    }
+
+    async function deleteSelectedWinback() {
+      const id = (WINBACK_SELECTED_ID || '').toString();
+      if (!id) return alert('Selecione uma campanha.');
+      if (!confirm('Apagar esta campanha?')) return;
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/winback/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao apagar');
+        WINBACK_SELECTED_ID = null;
+        await loadWinbackCampaigns();
+      } catch {
+        alert('Falha ao apagar');
+      }
+    }
+
+    function updateWinbackStatsHint() {
+      const el = document.getElementById('winbackStatsHint');
+      if (!el) return;
+      const c = (WINBACK_CAMPAIGNS || []).find(x => x.id === WINBACK_SELECTED_ID) || null;
+      if (!c) { el.textContent = ''; return; }
+      const rec = Array.isArray(c.recipients) ? c.recipients : [];
+      const totalSent = rec.reduce((a, r) => a + (Number(r.sentCount || 0) || 0), 0);
+      const responded = rec.filter(r => r.respondedAt).length;
+      const rate = rec.length ? Math.round((responded / rec.length) * 100) : 0;
+      el.textContent = `Selecionado: ${rec.length} contato(s) • Envios: ${totalSent} • Respostas: ${responded} (${rate}%)`;
+    }
+
+    async function loadBirthdayContacts() {
+      const box = document.getElementById('sched-bday-list');
+      if (!box) return;
+      if (!currentSessionId) { box.innerHTML = '<div class="text-muted" style="padding:12px;">Selecione uma sessão do WhatsApp.</div>'; return; }
+      box.innerHTML = '<div class="text-muted" style="padding:12px;">Carregando...</div>';
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/contacts/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ([]));
+        BDAY_CONTACTS = (Array.isArray(data) ? data : []).filter(c => (c.birthDate || '').toString().trim());
+      } catch {
+        BDAY_CONTACTS = [];
+      }
+      box.innerHTML = BDAY_CONTACTS.map(c => `
+        <label class="sched-group-item" style="align-items:flex-start;">
+          <input type="checkbox" class="bday-check" data-waid="${escapeHtml(c.waId || c.id || '')}">
+          <div>
+            <div style="font-weight:800;">${escapeHtml(c.name || c.waId || c.id || '')}</div>
+            <div class="text-muted" style="font-size:0.82rem;">${escapeHtml(c.birthDate || '')} • ${escapeHtml(c.number ? ('+' + String(c.number)) : '')}</div>
+          </div>
+        </label>
+      `).join('') || '<div class="text-muted" style="padding:12px;">Nenhum contato com data de aniversário.</div>';
+    }
+
+    function selectAllBirthdayContacts(on) {
+      document.querySelectorAll('#sched-bday-list .bday-check').forEach(cb => cb.checked = !!on);
+    }
+
+    async function saveBirthdaySchedule() {
+      if (!currentSessionId) return;
+      const ids = Array.from(document.querySelectorAll('#sched-bday-list .bday-check')).filter(x => x.checked).map(x => x.getAttribute('data-waid')).filter(Boolean);
+      if (!ids.length) return alert('Selecione pelo menos 1 contato.');
+      const message = (document.getElementById('sched-bday-text')?.value || '').toString();
+      if (!message.trim()) return alert('Digite a mensagem.');
+      const timeOfDay = (document.getElementById('sched-bday-time')?.value || '09:00').toString();
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/scheduled/birthday-bulk', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId, contactIds: ids, message, timeOfDay })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) return alert(data?.error || 'Falha ao agendar aniversários');
+        alert(`Agendado! Criados: ${data.created || 0}`);
+        loadScheduledList();
+      } catch {
+        alert('Falha ao agendar aniversários');
       }
     }
 
@@ -4053,6 +4414,9 @@
         const res = await fetch('/api/google/auth-url', { headers: { 'Authorization': `Bearer ${token}` } });
         const data = await res.json().catch(() => ({}));
         if (!data?.ok || !data?.url) return alert(data?.error || 'Falha ao iniciar conexão Google');
+        if (data?.redirectUri) {
+          console.log('Google redirectUri:', data.redirectUri);
+        }
         window.open(data.url, '_blank', 'noopener,noreferrer,width=520,height=720');
       } catch {
         alert('Falha ao iniciar conexão Google');
