@@ -1120,6 +1120,45 @@
     .scheduled-item .actions { display:flex; gap:10px; flex-shrink:0; }
     .sched-list-head { display:flex; justify-content:flex-end; margin-bottom: 10px; }
 
+    .dash-widgets { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .dash-widget {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      background: #fff;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+    .dash-widget .meta { min-width:0; }
+    .dash-widget .k { font-weight: 900; color:#111b21; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dash-widget .v { color:#667781; font-size: 0.86rem; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dash-ring { width: 46px; height: 46px; flex-shrink:0; display:grid; place-items:center; }
+    .dash-ring svg { width: 46px; height: 46px; }
+    .dash-ring .loop { transform-origin: 50% 50%; animation: dashSpin 1.4s linear infinite; }
+    @keyframes dashSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .dash-grid { display:grid; grid-template-columns: 1.2fr 0.8fr; gap: 14px; align-items: stretch; }
+    .dash-activity { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background:#fff; display:flex; flex-direction:column; min-height: 320px; }
+    .dash-activity-head { padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 900; display:flex; align-items:center; justify-content:space-between; gap: 10px; }
+    .dash-activity-list { flex:1; overflow:auto; padding: 12px; display:flex; flex-direction:column; gap: 10px; }
+    .dash-activity-item { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display:flex; align-items:flex-start; justify-content:space-between; gap: 10px; }
+    .dash-activity-item .t { font-weight: 900; color:#111b21; }
+    .dash-activity-item .s { color:#667781; font-size: 0.82rem; margin-top: 4px; }
+    .dash-activity-item .time { color:#667781; font-size: 0.78rem; white-space: nowrap; flex-shrink:0; }
+    .dash-slides { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background:#fff; display:flex; flex-direction:column; min-height: 320px; }
+    .dash-slides-head { padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 900; display:flex; align-items:center; justify-content:space-between; gap: 10px; }
+    .dash-slide { padding: 14px; display:none; flex:1; }
+    .dash-slide.active { display:block; }
+    .dash-slide-title { font-weight: 950; color:#111b21; font-size: 1.05rem; }
+    .dash-slide-sub { color:#667781; font-size: 0.86rem; margin-top: 4px; }
+    .dash-slide-bullets { margin-top: 10px; display:flex; flex-direction:column; gap: 8px; }
+    .dash-slide-bullets > div { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; color:#111b21; font-weight: 700; background: #f9f9f9; }
+    .dash-slide-dots { display:flex; gap: 6px; align-items:center; justify-content:center; padding: 10px 0 14px; }
+    .dash-dot { width: 8px; height: 8px; border-radius: 999px; background: #dfe5e8; }
+    .dash-dot.active { background: var(--primary); }
+
     /* ════════════════════════════════════════════════════════════════ */
     /* RESPONSIVE */
     /* ════════════════════════════════════════════════════════════════ */
@@ -1218,6 +1257,9 @@
 
       .scheduled-item { flex-direction: column; align-items: stretch; }
       .scheduled-item .actions { justify-content: flex-end; flex-wrap: wrap; }
+
+      .dash-widgets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dash-grid { grid-template-columns: 1fr; }
 
       #qrModal, #chatFlowsModal, #startFlowModal, #saveContactModal, #userMenuModal { padding: 12px !important; }
       #qrModal > div, #chatFlowsModal > div, #startFlowModal > div, #saveContactModal > div, #userMenuModal > div {
@@ -1384,10 +1426,24 @@
             <i class="fas fa-history" style="margin-right: 10px;"></i> Atividades Recentes
           </div>
           <div class="card-body">
-            <p style="color: #999; text-align: center; padding: 40px 0;">
-              <i class="fas fa-inbox" style="font-size: 2rem; opacity: 0.3; display: block; margin-bottom: 15px;"></i>
-              Nenhuma atividade registrada
-            </p>
+            <div id="dashboardWidgets" class="dash-widgets"></div>
+            <div class="dash-grid">
+              <div class="dash-activity">
+                <div class="dash-activity-head">
+                  <span>Atividade</span>
+                  <button class="btn-secondary-c" onclick="refreshDashboard()" style="padding:8px 10px;"><i class="fas fa-rotate"></i></button>
+                </div>
+                <div id="dashboardActivityList" class="dash-activity-list"></div>
+              </div>
+              <div class="dash-slides">
+                <div class="dash-slides-head">
+                  <span>Insights</span>
+                  <span class="text-muted" id="dashboardSlideHint" style="font-size:0.82rem;">-</span>
+                </div>
+                <div id="dashboardSlides"></div>
+                <div id="dashboardSlideDots" class="dash-slide-dots"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2201,6 +2257,9 @@
     let KANBAN_CHAT_META = new Map();
     let CONTACTS_PAGE = { q: '', offset: 0, limit: 100, total: 0, hasMore: false, loading: false, loadAll: false };
     let CONTACTS_SEARCH_TIMER = null;
+    let DASH_OVERVIEW_CACHE = null;
+    let DASH_SLIDE_IDX = 0;
+    let DASH_SLIDE_TIMER = null;
     let WINBACK_DRAFT = null;
     let WINBACK_CAMPAIGNS = [];
     let WINBACK_SELECTED_ID = null;
@@ -2245,6 +2304,7 @@
           loadRealChats();
           loadRealFlows();
           loadRealScheduled();
+          loadDashboardActivity();
           updateStatusBadge();
           setInterval(updateStatusBadge, 5000);
           initRealtime();
@@ -2300,14 +2360,19 @@
           const m = payload.message || {};
           onRealtimeMessage(chatId, m);
         });
+        socket.on('activity', (p) => {
+          if (p?.sessionId !== currentSessionId) return;
+          if (p?.item) addDashboardActivityItem(p.item, true);
+        });
         socket.on('ready', (p) => {
           if (p?.sessionId === currentSessionId) {
             updateStatusBadge();
             loadRealChats();
+            refreshDashboard();
           }
         });
         socket.on('disconnected', (p) => {
-          if (p?.sessionId === currentSessionId) updateStatusBadge();
+          if (p?.sessionId === currentSessionId) { updateStatusBadge(); refreshDashboard(); }
         });
         socket.on('ai-replied', (p) => {
           if (p?.sessionId !== currentSessionId) return;
@@ -2803,19 +2868,215 @@
       try {
         const token = localStorage.getItem('token');
         if (!currentSessionId) return;
-
-        const res = await fetch(`/api/stats/${currentSessionId}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const stats = await res.json();
-
-        document.getElementById('stat1').textContent = String(stats.scheduledTotal ?? 0);
-        document.getElementById('stat2').textContent = String(stats.flowsTotal ?? 0);
-        document.getElementById('stat3').textContent = String(stats.campaignsTotal ?? 0);
-        document.getElementById('stat4').textContent = (stats.isConnected ? '100%' : '0%');
+        const res = await fetch(`/api/dashboard/overview/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) throw new Error(data?.error || 'Falha');
+        DASH_OVERVIEW_CACHE = data;
+        document.getElementById('stat1').textContent = String(data.messagesToday ?? 0);
+        document.getElementById('stat2').textContent = String(data.contactsTotal ?? 0);
+        document.getElementById('stat3').textContent = String(data.activeConversations ?? 0);
+        document.getElementById('stat4').textContent = `${Number(data.responseRate ?? 0) || 0}%`;
+        renderDashboardWidgets(data);
+        renderDashboardSlides(data?.slides || []);
       } catch (e) {
         setEmptyStats();
       }
+    }
+
+    async function loadDashboardActivity() {
+      const el = document.getElementById('dashboardActivityList');
+      if (!el) return;
+      if (!currentSessionId) return;
+      el.innerHTML = '<div class="text-muted" style="text-align:center; padding:16px;">Carregando...</div>';
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/dashboard/activity/${encodeURIComponent(currentSessionId)}?limit=80`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        const items = Array.isArray(data?.items) ? data.items : [];
+        renderDashboardActivity(items);
+      } catch {
+        el.innerHTML = '<div class="text-muted" style="text-align:center; padding:16px;">Falha ao carregar.</div>';
+      }
+    }
+
+    function refreshDashboard() {
+      loadRealStats();
+      loadDashboardActivity();
+    }
+
+    function dashRingSvg(color, connected) {
+      const c = escapeHtml((color || '').toString() || '#128c7e');
+      const stroke = connected ? c : '#e74c3c';
+      return `
+        <div class="dash-ring">
+          <svg viewBox="0 0 44 44" aria-hidden="true">
+            <circle cx="22" cy="22" r="18" fill="none" stroke="#f0f2f5" stroke-width="6"></circle>
+            <circle class="loop" cx="22" cy="22" r="18" fill="none" stroke="${stroke}" stroke-width="6" stroke-linecap="round" stroke-dasharray="46 70"></circle>
+          </svg>
+        </div>
+      `;
+    }
+
+    function renderDashboardWidgets(data) {
+      const el = document.getElementById('dashboardWidgets');
+      if (!el) return;
+      const connected = !!data?.connected;
+      const wa = (data?.waNumber || '').toString();
+      const ai = data?.ai || {};
+      const cols = Array.isArray(data?.kanban?.columns) ? data.kanban.columns : [];
+      const win = data?.winback || {};
+      const topCols = cols.slice().sort((a, b) => (Number(b?.count || 0) || 0) - (Number(a?.count || 0) || 0)).slice(0, 3);
+      el.innerHTML = `
+        <div class="dash-widget">
+          <div class="meta">
+            <div class="k">${connected ? 'Conexão' : 'Conexão'}</div>
+            <div class="v">${connected ? `Online${wa ? ` • ${escapeHtml(wa)}` : ''}` : 'Offline'}</div>
+          </div>
+          ${dashRingSvg('#128c7e', connected)}
+        </div>
+        <div class="dash-widget">
+          <div class="meta">
+            <div class="k">IA Agente</div>
+            <div class="v">${ai?.enabled ? `Ativa • ${escapeHtml((ai?.mode || '').toString() || 'modo')}` : 'Desativada'}</div>
+          </div>
+          ${dashRingSvg('#8e44ad', !!ai?.enabled)}
+        </div>
+        <div class="dash-widget">
+          <div class="meta">
+            <div class="k">CRM</div>
+            <div class="v">${topCols.length ? escapeHtml(topCols.map(x => `${(x?.name || '').toString()} (${Number(x?.count || 0) || 0})`).join(' • ')) : 'Sem colunas'}</div>
+          </div>
+          ${dashRingSvg('#3498db', true)}
+        </div>
+        <div class="dash-widget">
+          <div class="meta">
+            <div class="k">Winback</div>
+            <div class="v">${Number(win?.active || 0) ? `Ativo • ${Number(win.active || 0)} campanha(s)` : `Pausado • ${Number(win?.total || 0) || 0} campanha(s)`}</div>
+          </div>
+          ${dashRingSvg('#f39c12', Number(win?.active || 0) > 0)}
+        </div>
+      `;
+    }
+
+    function timeAgoLabel(tsMs) {
+      const t = Number(tsMs || 0) || 0;
+      if (!t) return '';
+      const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60);
+      if (h < 48) return `${h}h`;
+      const d = Math.floor(h / 24);
+      return `${d}d`;
+    }
+
+    function renderDashboardActivity(items) {
+      const el = document.getElementById('dashboardActivityList');
+      if (!el) return;
+      const rows = Array.isArray(items) ? items : [];
+      if (!rows.length) {
+        el.innerHTML = '<div class="text-muted" style="text-align:center; padding:16px;">Nenhuma atividade registrada</div>';
+        return;
+      }
+      el.innerHTML = rows.slice(0, 80).map(it => {
+        const title = (it?.title || 'Atividade').toString();
+        const type = (it?.type || '').toString();
+        const meta = it?.meta || null;
+        const sub = meta?.chatId ? `Chat: ${meta.chatId}` : meta?.waId ? `Contato: ${meta.waId}` : type;
+        const time = timeAgoLabel(it?.ts || it?.createdAt);
+        return `
+          <div class="dash-activity-item">
+            <div style="min-width:0;">
+              <div class="t">${escapeHtml(title)}</div>
+              <div class="s">${escapeHtml((sub || '').toString())}</div>
+            </div>
+            <div class="time">${escapeHtml(time)}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function addDashboardActivityItem(item, prepend) {
+      const el = document.getElementById('dashboardActivityList');
+      if (!el) return;
+      const empty = (el.textContent || '').toString().includes('Nenhuma atividade');
+      if (empty) el.innerHTML = '';
+      const it = item || {};
+      const title = (it?.title || 'Atividade').toString();
+      const type = (it?.type || '').toString();
+      const meta = it?.meta || null;
+      const sub = meta?.chatId ? `Chat: ${meta.chatId}` : meta?.waId ? `Contato: ${meta.waId}` : type;
+      const time = timeAgoLabel(it?.ts || it?.createdAt);
+      const html = `
+        <div class="dash-activity-item">
+          <div style="min-width:0;">
+            <div class="t">${escapeHtml(title)}</div>
+            <div class="s">${escapeHtml((sub || '').toString())}</div>
+          </div>
+          <div class="time">${escapeHtml(time)}</div>
+        </div>
+      `;
+      if (!prepend) { el.insertAdjacentHTML('beforeend', html); return; }
+      el.insertAdjacentHTML('afterbegin', html);
+      const children = el.querySelectorAll('.dash-activity-item');
+      if (children.length > 80) {
+        for (let i = 80; i < children.length; i++) children[i]?.remove?.();
+      }
+    }
+
+    function stopDashboardSlides() {
+      if (DASH_SLIDE_TIMER) { clearInterval(DASH_SLIDE_TIMER); DASH_SLIDE_TIMER = null; }
+    }
+
+    function renderDashboardSlides(slides) {
+      const root = document.getElementById('dashboardSlides');
+      const dots = document.getElementById('dashboardSlideDots');
+      const hint = document.getElementById('dashboardSlideHint');
+      stopDashboardSlides();
+      if (!root || !dots) return;
+      const rows = Array.isArray(slides) ? slides : [];
+      if (!rows.length) {
+        root.innerHTML = '<div class="dash-slide active"><div class="dash-slide-title">Sem insights</div><div class="dash-slide-sub">Conecte o WhatsApp e use o sistema para gerar dados.</div></div>';
+        dots.innerHTML = '';
+        if (hint) hint.textContent = '-';
+        return;
+      }
+      DASH_SLIDE_IDX = 0;
+      root.innerHTML = rows.map((s, i) => {
+        const title = (s?.title || '').toString();
+        const sub = (s?.subtitle || '').toString();
+        const bullets = Array.isArray(s?.bullets) ? s.bullets : [];
+        return `
+          <div class="dash-slide ${i === 0 ? 'active' : ''}" data-idx="${i}">
+            <div class="dash-slide-title">${escapeHtml(title)}</div>
+            <div class="dash-slide-sub">${escapeHtml(sub)}</div>
+            <div class="dash-slide-bullets">${bullets.map(b => `<div>${escapeHtml((b || '').toString())}</div>`).join('')}</div>
+          </div>
+        `;
+      }).join('');
+      dots.innerHTML = rows.map((_, i) => `<div class="dash-dot ${i === 0 ? 'active' : ''}" data-idx="${i}" onclick="setDashboardSlide(${i})"></div>`).join('');
+      if (hint) hint.textContent = `1/${rows.length}`;
+      DASH_SLIDE_TIMER = setInterval(() => {
+        setDashboardSlide((DASH_SLIDE_IDX + 1) % rows.length);
+      }, 4500);
+    }
+
+    function setDashboardSlide(idx) {
+      const root = document.getElementById('dashboardSlides');
+      const dots = document.getElementById('dashboardSlideDots');
+      const hint = document.getElementById('dashboardSlideHint');
+      if (!root || !dots) return;
+      const slides = Array.from(root.querySelectorAll('.dash-slide'));
+      if (!slides.length) return;
+      const next = Math.max(0, Math.min(slides.length - 1, Number(idx) || 0));
+      slides.forEach(s => s.classList.remove('active'));
+      slides[next].classList.add('active');
+      const d = Array.from(dots.querySelectorAll('.dash-dot'));
+      d.forEach(x => x.classList.remove('active'));
+      if (d[next]) d[next].classList.add('active');
+      DASH_SLIDE_IDX = next;
+      if (hint) hint.textContent = `${next + 1}/${slides.length}`;
     }
 
     async function loadRealChats() {

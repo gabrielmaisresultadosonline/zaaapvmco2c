@@ -1713,6 +1713,38 @@ function saveUserPrefs(userId, patch) {
   return getUserPrefs(userId);
 }
 
+function appendActivity(sessionId, actorUserId, type, title, meta) {
+  try {
+    const store = db.load('activity', {});
+    const sid = String(sessionId || '');
+    if (!sid) return;
+    const arr = Array.isArray(store[sid]) ? store[sid] : [];
+    const item = {
+      id: uuid(),
+      sessionId: sid,
+      actorUserId: actorUserId ? String(actorUserId) : null,
+      type: String(type || 'event'),
+      title: String(title || ''),
+      meta: meta || null,
+      ts: Date.now(),
+      createdAt: new Date().toISOString()
+    };
+    arr.push(item);
+    if (arr.length > 300) arr.splice(0, arr.length - 300);
+    store[sid] = arr;
+    db.save('activity', store);
+    if (io) io.to(sid).emit('activity', { sessionId: sid, item });
+  } catch {}
+}
+
+function getSessionActivities(sessionId, limit) {
+  const store = db.load('activity', {});
+  const sid = String(sessionId || '');
+  const arr = Array.isArray(store?.[sid]) ? store[sid] : [];
+  const n = Math.max(1, Math.min(200, Number(limit || 50) || 50));
+  return arr.slice(-n).reverse();
+}
+
 async function getGoogleAccessToken(userId) {
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').toString().trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').toString().trim();
@@ -1830,6 +1862,178 @@ route('POST', '/api/google/prefs', (req, res) => {
   const googleAutoSaveContacts = !!req.body?.googleAutoSaveContacts;
   const prefs = saveUserPrefs(u.id, { googleAutoSaveContacts });
   json(res, { ok: true, prefs });
+});
+
+route('GET', '/api/dashboard/overview/:sessionId', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sid = req.params.sessionId;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === sid);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const connected = (waStatus.get(sid) || sess.status || 'disconnected') === 'connected';
+  const contactsTotal = db.load('contacts', []).filter(c => String(c?.sessionId || '') === String(sid)).length;
+  const kanban = db.load('kanban', {})?.[sid] || null;
+  const cols = Array.isArray(kanban?.columns) ? kanban.columns : [];
+  const kanbanCounts = cols.map(c => ({
+    id: String(c?.id || ''),
+    name: String(c?.name || ''),
+    color: String(c?.color || ''),
+    count: Array.isArray(c?.chats) ? c.chats.length : 0
+  }));
+  const cfg = getAIConfig(sid);
+  const aiEnabled = !!cfg?.enabled;
+  const aiMode = (cfg?.mode || '').toString() || 'manual';
+
+  let chats = [];
+  let messagesToday = 0;
+  let activeConversations = 0;
+  let responseRate = 0;
+  let waNumber = null;
+  let waPushname = null;
+  try {
+    const client = waClients.get(sid);
+    const info = client?.info || null;
+    waNumber = info?.wid?.user ? `+${String(info.wid.user)}` : null;
+    waPushname = info?.pushname || null;
+    if (connected && client?.info) {
+      const list = await client.getChats();
+      const slice = list.slice(0, 200);
+      chats = slice.map(c => ({
+        id: c.id?._serialized,
+        isGroup: !!c.isGroup,
+        unread: Number(c.unreadCount || 0) || 0,
+        timestamp: Number(c.timestamp || 0) || 0,
+        lastFromMe: !!c.lastMessage?.fromMe
+      })).filter(x => x.id && !x.isGroup);
+    }
+  } catch {}
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dayKeyNow = dayKeyFromTs(nowSec);
+  const last24h = chats.filter(c => c.timestamp && (nowSec - c.timestamp) <= 24 * 3600);
+  activeConversations = last24h.length;
+  const in24 = last24h.filter(c => !c.lastFromMe).length;
+  const out24 = last24h.filter(c => c.lastFromMe).length;
+  responseRate = (in24 + out24) ? Math.round((out24 / (in24 + out24)) * 100) : 0;
+
+  try {
+    const ranked = chats.slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 60);
+    let count = 0;
+    for (const c of ranked) {
+      const hist = getHistory(sid, c.id);
+      const items = Array.isArray(hist) ? hist : [];
+      for (let i = items.length - 1; i >= 0 && count < 5000; i--) {
+        const m = items[i];
+        if (!m) continue;
+        if (dayKeyFromTs(m.timestamp || 0) !== dayKeyNow) break;
+        if (!m.fromMe) messagesToday += 1;
+        count += 1;
+      }
+      if (count >= 5000) break;
+    }
+  } catch {}
+
+  const campaigns = db.load('winback_campaigns', []).filter(c => String(c?.sessionId || '') === String(sid) && (c.type || '') !== 'draft');
+  const winbackActive = campaigns.filter(c => !!c.active);
+  const winbackStats = {
+    total: campaigns.length,
+    active: winbackActive.length,
+    recipients: campaigns.reduce((a, c) => a + (Array.isArray(c?.recipients) ? c.recipients.length : 0), 0),
+    responded: campaigns.reduce((a, c) => a + (Array.isArray(c?.recipients) ? c.recipients.filter(r => r?.respondedAt).length : 0), 0)
+  };
+
+  let aiHighlights = [];
+  try {
+    const store = db.load('ai_transcripts', {});
+    const chatsStore = store?.[sid] || {};
+    const out = [];
+    for (const [chatId, arr] of Object.entries(chatsStore)) {
+      const items = Array.isArray(arr) ? arr : [];
+      if (!items.length) continue;
+      let lastTs = 0;
+      let last = '';
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (!it) continue;
+        const ts = Number(it?.ts || 0) || 0;
+        if (ts > lastTs) lastTs = ts;
+        if (!last) last = (it?.content || '').toString();
+        if (lastTs && last) break;
+      }
+      if (!lastTs) continue;
+      out.push({ chatId, lastTs, text: last.replace(/\s+/g, ' ').trim() });
+    }
+    out.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
+    aiHighlights = out.slice(0, 8).map(x => ({ chatId: x.chatId, lastTs: x.lastTs, text: x.text.length > 140 ? x.text.slice(0, 140) + '…' : x.text }));
+  } catch {}
+
+  const slides = [];
+  slides.push({
+    kind: 'status',
+    title: connected ? 'WhatsApp conectado' : 'WhatsApp desconectado',
+    subtitle: waNumber ? `${waNumber}${waPushname ? ` • ${waPushname}` : ''}` : '',
+    bullets: [
+      `Conversas 24h: ${activeConversations}`,
+      `Respostas 24h: ${responseRate}%`,
+      `Contatos: ${contactsTotal}`
+    ]
+  });
+  slides.push({
+    kind: 'ai',
+    title: 'IA Agente',
+    subtitle: aiEnabled ? `Ativa • modo: ${aiMode}` : 'Desativada',
+    bullets: [
+      `Highlights: ${aiHighlights.length}`,
+      `CRM colunas: ${kanbanCounts.length}`,
+      `Winback ativo: ${winbackStats.active}`
+    ]
+  });
+  if (winbackStats.total) {
+    slides.push({
+      kind: 'winback',
+      title: 'Winback',
+      subtitle: `Campanhas: ${winbackStats.total} • Ativas: ${winbackStats.active}`,
+      bullets: [
+        `Alvos: ${winbackStats.recipients}`,
+        `Respostas: ${winbackStats.responded}`
+      ]
+    });
+  }
+  for (const h of aiHighlights.slice(0, 5)) {
+    slides.push({
+      kind: 'insight',
+      title: 'Resumo IA',
+      subtitle: String(h.chatId || ''),
+      bullets: [String(h.text || '')]
+    });
+  }
+
+  json(res, {
+    ok: true,
+    sessionId: sid,
+    connected,
+    waNumber,
+    waPushname,
+    messagesToday,
+    contactsTotal,
+    activeConversations,
+    responseRate,
+    ai: { enabled: aiEnabled, mode: aiMode },
+    kanban: { columns: kanbanCounts },
+    winback: winbackStats,
+    slides
+  });
+});
+
+route('GET', '/api/dashboard/activity/:sessionId', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sid = req.params.sessionId;
+  const sessions = db.load('sessions');
+  const sess = sessions.find(x => x.id === sid);
+  if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const qs = new URL(req.url, 'http://x').searchParams;
+  const limit = qs.get('limit');
+  json(res, { ok: true, sessionId: sid, items: getSessionActivities(sid, limit) });
 });
 
 route('POST', '/api/google/sync-contacts/:sessionId', async (req, res) => {
@@ -2384,6 +2588,7 @@ route('POST', '/api/whatsapp/send', async (req, res) => {
         await googleCreateOrUpdateContact(u.id, { number: digits || null, name: '', email: '' });
       }
     } catch {}
+    appendActivity(sessionId, u.id, 'wa.send', 'Mensagem enviada', { to: toNorm, hasText: !!String(message || '').trim() });
     json(res, { ok: true, to: toNorm });
   } catch (e) {
     err(res, e.message, 500);
@@ -2893,6 +3098,7 @@ route('POST', '/api/contacts/:sessionId', async (req, res) => {
   } catch (e) {
     googleSync = { ok: false, error: (e?.message || 'Falha ao salvar no Google').toString() };
   }
+  appendActivity(req.params.sessionId, u.id, 'contact.save', 'Contato salvo', { waId: contact.waId || contact.id || null, name: contact.name || '' });
   json(res, { ...contact, googleSync });
 });
 
@@ -3451,6 +3657,7 @@ async function initWhatsApp(sessionId, userId) {
       const qrImg = qrcode ? await qrcode.toDataURL(qr) : '';
       if (qrImg) waLastQr.set(sessionId, { qr: qrImg, ts: Date.now() });
       if (io) io.to(sessionId).emit('qr', { sessionId, qr: qrImg });
+      appendActivity(sessionId, userId, 'wa.qr', 'QR gerado (aguardando leitura)', null);
     });
     client.on('ready', () => {
       waStatus.set(sessionId, 'connected');
@@ -3459,12 +3666,14 @@ async function initWhatsApp(sessionId, userId) {
       const sessions = db.load('sessions');
       const s = sessions.find(x => x.id === sessionId);
       if (s) { s.status = 'connected'; db.save('sessions', sessions); }
+      appendActivity(sessionId, userId, 'wa.ready', 'WhatsApp conectado', null);
     });
     client.on('disconnected', (reason) => {
       waStatus.set(sessionId, 'disconnected');
       waClients.delete(sessionId);
       waLastQr.delete(sessionId);
       if (io) io.to(sessionId).emit('disconnected', { sessionId, reason });
+      appendActivity(sessionId, userId, 'wa.disconnected', 'WhatsApp desconectado', { reason: String(reason || '') });
     });
   client.on('message', async (msg) => {
     const chatId = msg.from;
@@ -3480,6 +3689,7 @@ async function initWhatsApp(sessionId, userId) {
     }
     addToHistory(sessionId, chatId, msgData);
     if (io) io.to(sessionId).emit('new-message', { sessionId, chatId, message: msgData });
+    appendActivity(sessionId, userId, 'wa.inbound', 'Nova mensagem recebida', { chatId, type: msgData.type });
     if (!msg.fromMe) {
       markWinbackResponded(sessionId, chatId);
       handleFlows(sessionId, chatId, msg, client, userId).catch(() => {});
@@ -3500,6 +3710,7 @@ async function initWhatsApp(sessionId, userId) {
     }
     addToHistory(sessionId, msg.to, msgData);
     if (io) io.to(sessionId).emit('new-message', { sessionId, chatId: msg.to, message: msgData });
+    appendActivity(sessionId, userId, 'wa.outbound', 'Mensagem enviada', { chatId: msg.to, type: msgData.type });
   });
     client.initialize().catch(e => { 
       console.error('WA init error:', e?.message || e);
