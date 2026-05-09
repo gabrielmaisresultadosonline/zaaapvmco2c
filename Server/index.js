@@ -352,8 +352,11 @@ function isLocalhostUrl(u) {
 }
 
 function normalizeOAuthRedirectUri(u) {
-  const raw = (u || '').toString().trim();
+  let raw = (u || '').toString().trim();
   if (!raw) return '';
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) && !raw.startsWith('/')) {
+    raw = `https://${raw.replace(/^\/+/, '')}`;
+  }
   try {
     const url = new URL(raw);
     const host = (url.hostname || '').toLowerCase();
