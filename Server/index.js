@@ -1341,6 +1341,9 @@ route('GET', '/administrativo', (req, res) => {
 route('GET', '/administrativo/', (req, res) => {
   html(res, adminPageHtml());
 });
+route('GET', '/administrativo.html', (req, res) => {
+  html(res, adminPageHtml());
+});
 
 route('GET', '/auth/google/callback', async (req, res) => {
   const qs = new URL(req.url, 'http://x').searchParams;
