@@ -4591,6 +4591,10 @@
       try { chatId = decodeURIComponent(chatId); } catch {}
       try { decodedName = decodeURIComponent(decodedName); } catch {}
       if (!chatId) return;
+      if (!chatId.includes('@')) {
+        const d = digitsOnly(chatId);
+        if (d) chatId = `${d}@c.us`;
+      }
       const nav = Array.from(document.querySelectorAll('.nav-item')).find(x => (x.getAttribute('onclick') || '').includes("switchPage('chats')"));
       if (nav) nav.click();
       setTimeout(() => {
@@ -5164,6 +5168,10 @@
 
       try {
         const token = localStorage.getItem('token');
+        if (!selectedChatId.includes('@')) {
+          const d = digitsOnly(selectedChatId);
+          if (d) selectedChatId = `${d}@c.us`;
+        }
         const res = await fetch(`/api/whatsapp/send`, {
           method: 'POST',
           headers: {
@@ -5182,7 +5190,7 @@
           input.value = '';
           hideEmojiPicker();
         } else {
-          alert('Erro ao enviar mensagem: ' + data.error);
+          alert('Erro ao enviar mensagem: ' + (data.error || 'Falha'));
         }
       } catch (e) {
         alert('Erro ao enviar mensagem');

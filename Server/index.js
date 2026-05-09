@@ -1993,6 +1993,32 @@ route('GET', '/api/whatsapp/status/:sessionId', (req, res) => {
   json(res, { status, connected: status === 'connected' });
 });
 
+route('GET', '/api/whatsapp/resolve', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const qs = new URL(req.url, 'http://x').searchParams;
+  const sessionId = (qs.get('sessionId') || '').toString();
+  const numberRaw = (qs.get('number') || qs.get('to') || '').toString();
+  if (!sessionId || !numberRaw) return err(res, 'sessionId/number required', 400);
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const client = waClients.get(sessionId);
+  if (!client?.info) return err(res, 'Session not connected', 400);
+  const digits = digitsOnly(numberRaw);
+  if (!digits || digits.length < 8) return err(res, 'Número inválido', 400);
+  const waId = `${digits}@c.us`;
+  let registered = null;
+  try {
+    if (typeof client.isRegisteredUser === 'function') {
+      registered = await client.isRegisteredUser(waId);
+    } else if (typeof client.getNumberId === 'function') {
+      const r = await client.getNumberId(digits);
+      registered = !!(r && (r._serialized || r.user || r));
+    }
+  } catch {}
+  json(res, { ok: true, sessionId, number: digits, waId, registered });
+});
+
 route('GET', '/api/whatsapp/self/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
@@ -2315,8 +2341,53 @@ route('POST', '/api/whatsapp/send', async (req, res) => {
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected');
-  try { await client.sendMessage(to, message); json(res, { ok: true }); }
-  catch (e) { err(res, e.message, 500); }
+  const toStr = (to || '').toString().trim();
+  const digits = digitsOnly(toStr);
+  const toNorm = toStr.includes('@') ? toStr : (digits ? `${digits}@c.us` : toStr);
+  if (!toNorm.includes('@')) return err(res, 'Destino inválido', 400);
+  try {
+    if (toNorm.endsWith('@c.us') && typeof client.isRegisteredUser === 'function') {
+      const ok = await client.isRegisteredUser(toNorm);
+      if (!ok) return err(res, 'Este número não possui WhatsApp', 400);
+    }
+  } catch {}
+  try {
+    await client.sendMessage(toNorm, message);
+    let createdLocal = false;
+    try {
+      if (toNorm.endsWith('@c.us')) {
+        const contacts = db.load('contacts', []);
+        const existing = contacts.find(c => String(c?.sessionId || '') === String(sessionId) && String((c?.waId || c?.id || '')).toLowerCase() === String(toNorm).toLowerCase()) || null;
+        if (!existing) {
+          contacts.push({
+            id: toNorm,
+            waId: toNorm,
+            sessionId,
+            userId: s.userId,
+            name: '',
+            number: digits || null,
+            email: '',
+            note: '',
+            source: 'wa',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          db.save('contacts', contacts);
+          createdLocal = true;
+        }
+      }
+    } catch {}
+    try {
+      const prefs = getUserPrefs(u.id);
+      const tokenItem = getGoogleTokenItem(u.id);
+      if (createdLocal && prefs.googleAutoSaveContacts && tokenItem?.access_token) {
+        await googleCreateOrUpdateContact(u.id, { number: digits || null, name: '', email: '' });
+      }
+    } catch {}
+    json(res, { ok: true, to: toNorm });
+  } catch (e) {
+    err(res, e.message, 500);
+  }
 });
 
 route('POST', '/api/whatsapp/send-media', async (req, res) => {
