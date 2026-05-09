@@ -1952,17 +1952,43 @@
           initRealtime();
         } else {
           loadAIConfig();
-          // Sem sessão, mostrar dados demo
-          loadDemoData();
-          loadDemoChats();
           setStatusBadge('disconnected');
-          setStatusBadge('disconnected');
+          setEmptyStats();
+          renderNeedsWhatsAppConnection();
         }
       } catch (e) {
         console.log('Erro ao carregar sessões');
         setStatusBadge('error', 'Erro de sessão');
+        setEmptyStats();
+        renderNeedsWhatsAppConnection();
       }
     });
+
+    function setEmptyStats() {
+      const s1 = document.getElementById('stat1');
+      const s2 = document.getElementById('stat2');
+      const s3 = document.getElementById('stat3');
+      const s4 = document.getElementById('stat4');
+      if (s1) s1.textContent = '0';
+      if (s2) s2.textContent = '0';
+      if (s3) s3.textContent = '0';
+      if (s4) s4.textContent = '0%';
+    }
+
+    function renderNeedsWhatsAppConnection() {
+      const container = document.getElementById('chatListContainer');
+      if (!container) return;
+      container.innerHTML = `
+        <div style="padding: 30px 15px; text-align: center; color: #999;">
+          <i class="fab fa-whatsapp" style="font-size: 2.2rem; opacity: 0.25; display: block; margin-bottom: 10px;"></i>
+          <p style="margin: 0; font-weight: 700; color: #666;">Conecte o WhatsApp para ver os chats</p>
+          <p style="font-size: 0.85rem; margin: 8px 0 12px; line-height: 1.4;">Clique no status do topo ou no botão abaixo para abrir o QR.</p>
+          <button class="btn-primary-c" style="display:inline-flex; align-items:center; gap:8px; justify-content:center;" onclick="openQrModal()">
+            <i class="fab fa-whatsapp"></i> Conectar WhatsApp
+          </button>
+        </div>
+      `;
+    }
 
     function initRealtime() {
       if (!window.io) return;
@@ -2427,8 +2453,7 @@
         document.getElementById('stat3').textContent = String(stats.campaignsTotal ?? 0);
         document.getElementById('stat4').textContent = (stats.isConnected ? '100%' : '0%');
       } catch (e) {
-        console.log('Usando dados demo para stats');
-        loadDemoData();
+        setEmptyStats();
       }
     }
 
