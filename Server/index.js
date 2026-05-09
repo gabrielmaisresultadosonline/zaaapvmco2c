@@ -243,7 +243,11 @@ function parseDotenv() {
     if (!existsSync(envFile)) return;
     readFileSync(envFile, 'utf8').split('\n').forEach(line => {
       const m = line.match(/^([^#=]+)=(.*)$/);
-      if (m) process.env[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, '');
+      if (m) {
+        const k = m[1].trim();
+        const v = m[2].trim().replace(/^["']|["']$/g, '');
+        if (process.env[k] === undefined || process.env[k] === '') process.env[k] = v;
+      }
     });
   } catch {}
 }
