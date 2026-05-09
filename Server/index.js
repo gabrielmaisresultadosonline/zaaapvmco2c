@@ -1696,6 +1696,23 @@ function saveGoogleTokenItem(userId, patch) {
   db.save('auth_tokens', tokens);
 }
 
+function getUserPrefs(userId) {
+  const all = db.load('user_prefs', {});
+  const item = all?.[String(userId || '')] || {};
+  return {
+    googleAutoSaveContacts: !!item.googleAutoSaveContacts
+  };
+}
+
+function saveUserPrefs(userId, patch) {
+  const all = db.load('user_prefs', {});
+  const key = String(userId || '');
+  const prev = all?.[key] || {};
+  all[key] = { ...prev, ...patch, updatedAt: new Date().toISOString() };
+  db.save('user_prefs', all);
+  return getUserPrefs(userId);
+}
+
 async function getGoogleAccessToken(userId) {
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').toString().trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').toString().trim();
@@ -1719,6 +1736,61 @@ async function getGoogleAccessToken(userId) {
   return data.access_token;
 }
 
+function googlePersonFromLocalContact(contact) {
+  const name = (contact?.name || '').toString().trim();
+  const email = (contact?.email || '').toString().trim();
+  const digits = digitsOnly(contact?.number || '');
+  const person = {};
+  if (name) person.names = [{ displayName: name, unstructuredName: name }];
+  if (email) person.emailAddresses = [{ value: email }];
+  if (digits) person.phoneNumbers = [{ value: `+${digits}` }];
+  return person;
+}
+
+async function googleFindContactByPhone(userId, digits) {
+  const q = digitsOnly(digits || '');
+  if (!q || q.length < 8) return null;
+  const token = await getGoogleAccessToken(userId);
+  const url = new URL('https://people.googleapis.com/v1/people:searchContacts');
+  url.searchParams.set('query', q);
+  url.searchParams.set('readMask', 'metadata,names,emailAddresses,phoneNumbers');
+  url.searchParams.set('pageSize', '1');
+  const resp = await fetch(url.toString(), { headers: { 'Authorization': `Bearer ${token}` } });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) return null;
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const person = results?.[0]?.person || null;
+  if (!person?.resourceName) return null;
+  const sources = Array.isArray(person?.metadata?.sources) ? person.metadata.sources : [];
+  const src = sources.find(s => (s?.type || '').toString() === 'CONTACT') || sources[0] || null;
+  return { resourceName: person.resourceName, etag: src?.etag || person.etag || null };
+}
+
+async function googleCreateOrUpdateContact(userId, contact) {
+  const token = await getGoogleAccessToken(userId);
+  const digits = digitsOnly(contact?.number || '');
+  const existing = await googleFindContactByPhone(userId, digits).catch(() => null);
+  const person = googlePersonFromLocalContact(contact);
+  if (existing?.resourceName && existing?.etag) {
+    const url = new URL(`https://people.googleapis.com/v1/${encodeURIComponent(existing.resourceName)}:updateContact`);
+    url.searchParams.set('updatePersonFields', 'names,emailAddresses,phoneNumbers');
+    const body = {
+      resourceName: existing.resourceName,
+      etag: existing.etag,
+      metadata: { sources: [{ type: 'CONTACT', etag: existing.etag }] },
+      ...person
+    };
+    const resp = await fetch(url.toString(), { method: 'PATCH', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) return { ok: true, kind: 'update', resourceName: data?.resourceName || existing.resourceName, etag: data?.etag || existing.etag };
+  }
+  const createUrl = new URL('https://people.googleapis.com/v1/people:createContact');
+  const createResp = await fetch(createUrl.toString(), { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(person) });
+  const createData = await createResp.json().catch(() => ({}));
+  if (!createResp.ok) throw new Error(createData?.error?.message || 'Falha ao criar contato no Google');
+  return { ok: true, kind: 'create', resourceName: createData?.resourceName || null, etag: createData?.etag || null };
+}
+
 route('GET', '/api/google/auth-url', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').toString().trim();
@@ -1726,7 +1798,7 @@ route('GET', '/api/google/auth-url', (req, res) => {
   if (!clientId) return err(res, 'Google OAuth não configurado', 500);
   const state = signToken({ type: 'google_oauth', uid: u.id, returnTo: '/dashboard.html#contacts' });
   const scope = [
-    'https://www.googleapis.com/auth/contacts.readonly',
+    'https://www.googleapis.com/auth/contacts',
     'https://www.googleapis.com/auth/userinfo.profile'
   ].join(' ');
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -1744,7 +1816,20 @@ route('GET', '/api/google/auth-url', (req, res) => {
 route('GET', '/api/google/status', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const item = getGoogleTokenItem(u.id);
-  json(res, { connected: !!item?.access_token, scope: item?.scope || null, updatedAt: item?.updatedAt || null });
+  const prefs = getUserPrefs(u.id);
+  json(res, { connected: !!item?.access_token, scope: item?.scope || null, updatedAt: item?.updatedAt || null, prefs });
+});
+
+route('GET', '/api/google/prefs', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  json(res, { ok: true, prefs: getUserPrefs(u.id) });
+});
+
+route('POST', '/api/google/prefs', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const googleAutoSaveContacts = !!req.body?.googleAutoSaveContacts;
+  const prefs = saveUserPrefs(u.id, { googleAutoSaveContacts });
+  json(res, { ok: true, prefs });
 });
 
 route('POST', '/api/google/sync-contacts/:sessionId', async (req, res) => {
@@ -1753,13 +1838,21 @@ route('POST', '/api/google/sync-contacts/:sessionId', async (req, res) => {
   const s = sessions.find(x => x.id === req.params.sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
   const token = await getGoogleAccessToken(u.id);
-  const url = new URL('https://people.googleapis.com/v1/people/me/connections');
-  url.searchParams.set('personFields', 'names,emailAddresses,phoneNumbers');
-  url.searchParams.set('pageSize', '1000');
-  const resp = await fetch(url.toString(), { headers: { 'Authorization': `Bearer ${token}` } });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) return err(res, data?.error?.message || 'Falha ao buscar contatos Google', 400);
-  const connections = Array.isArray(data?.connections) ? data.connections : [];
+  const connections = [];
+  let nextPageToken = '';
+  for (let i = 0; i < 50; i++) {
+    const url = new URL('https://people.googleapis.com/v1/people/me/connections');
+    url.searchParams.set('personFields', 'names,emailAddresses,phoneNumbers');
+    url.searchParams.set('pageSize', '1000');
+    if (nextPageToken) url.searchParams.set('pageToken', nextPageToken);
+    const resp = await fetch(url.toString(), { headers: { 'Authorization': `Bearer ${token}` } });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) return err(res, data?.error?.message || 'Falha ao buscar contatos Google', 400);
+    const page = Array.isArray(data?.connections) ? data.connections : [];
+    connections.push(...page);
+    nextPageToken = (data?.nextPageToken || '').toString();
+    if (!nextPageToken) break;
+  }
   const contacts = db.load('contacts', []);
   let imported = 0;
   let updated = 0;
@@ -2622,9 +2715,28 @@ route('GET', '/api/contacts/:sessionId', (req, res) => {
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
   if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
-  const contacts = db.load('contacts').filter(c => c.sessionId === req.params.sessionId);
+  const qs = new URL(req.url, 'http://x').searchParams;
+  const limitRaw = qs.get('limit');
+  const offsetRaw = qs.get('offset');
+  const q = (qs.get('q') || '').toString().trim().toLowerCase();
+  const wantPaging = (limitRaw !== null) || (offsetRaw !== null) || !!q;
+  const limit = Math.max(1, Math.min(5000, Number(limitRaw || 0) || 0));
+  const offset = Math.max(0, Number(offsetRaw || 0) || 0);
+
+  const contactsAll = db.load('contacts').filter(c => c.sessionId === req.params.sessionId);
+  let contacts = contactsAll;
+  if (q) {
+    contacts = contactsAll.filter(c => {
+      const name = (c?.name || '').toString().toLowerCase();
+      const number = (c?.number || '').toString().toLowerCase();
+      const waId = (c?.waId || c?.id || '').toString().toLowerCase();
+      const note = (c?.note || '').toString().toLowerCase();
+      const email = (c?.email || '').toString().toLowerCase();
+      return name.includes(q) || number.includes(q) || waId.includes(q) || note.includes(q) || email.includes(q);
+    });
+  }
   let changed = false;
-  for (const c of contacts) {
+  for (const c of contactsAll) {
     const waId = (c?.waId || c?.id || '').toString();
     const waDigits = digitsOnly(waId.match(/^(\d+)@/)?.[1] || '');
     let num = digitsOnly(c?.number);
@@ -2645,14 +2757,17 @@ route('GET', '/api/contacts/:sessionId', (req, res) => {
   }
   if (changed) {
     const all = db.load('contacts');
-    const map = new Map(contacts.map(x => [x.id, x]));
+    const map = new Map(contactsAll.map(x => [x.id, x]));
     const merged = all.map(x => map.get(x.id) || x);
     db.save('contacts', merged);
   }
-  json(res, contacts);
+  if (!wantPaging) return json(res, contactsAll);
+  const total = contacts.length;
+  const items = (limit ? contacts.slice(offset, offset + limit) : contacts.slice(offset));
+  json(res, { ok: true, total, offset, limit: limit || null, items });
 });
 
-route('POST', '/api/contacts/:sessionId', (req, res) => {
+route('POST', '/api/contacts/:sessionId', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === req.params.sessionId);
@@ -2696,7 +2811,18 @@ route('POST', '/api/contacts/:sessionId', (req, res) => {
   };
   const idx = contacts.findIndex(c => c.id === contact.id);
   if (idx >= 0) contacts[idx] = contact; else contacts.push(contact);
-  db.save('contacts', contacts); json(res, contact);
+  db.save('contacts', contacts);
+  let googleSync = null;
+  try {
+    const prefs = getUserPrefs(u.id);
+    const tokenItem = getGoogleTokenItem(u.id);
+    if (prefs.googleAutoSaveContacts && tokenItem?.access_token) {
+      googleSync = await googleCreateOrUpdateContact(u.id, contact);
+    }
+  } catch (e) {
+    googleSync = { ok: false, error: (e?.message || 'Falha ao salvar no Google').toString() };
+  }
+  json(res, { ...contact, googleSync });
 });
 
 // ── Scheduled ─────────────────────────────────────────────────────────

@@ -795,6 +795,44 @@
     /* ════════════════════════════════════════════════════════════════ */
     /* KANBAN */
     /* ════════════════════════════════════════════════════════════════ */
+    .kanban-layout { display:flex; gap: 16px; align-items: stretch; }
+    .kanban-pool {
+      width: 330px;
+      flex-shrink: 0;
+      background: white;
+      border-radius: 15px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .kanban-pool-head {
+      padding: 15px 20px;
+      background: #f9f9f9;
+      border-bottom: 2px solid #dfe5e8;
+      font-weight: 900;
+      color: var(--dark);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+    }
+    .kanban-pool-list {
+      flex: 1;
+      padding: 15px;
+      min-height: 400px;
+      overflow: auto;
+    }
+    .kanban-status-pill {
+      font-size: 0.72rem;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #f0f2f5;
+      color: #111b21;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
     .kanban-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -1161,6 +1199,11 @@
       .chat-layout.mobile-chat-open .chat-list { display: none; }
       .chat-layout.mobile-chat-open .chat-window { display: flex; }
 
+      .kanban-layout { flex-direction: column; }
+      .kanban-pool { width: 100%; }
+      .kanban-pool-list { display:flex; gap: 12px; overflow-x: auto; }
+      .kanban-pool-list .kanban-card { min-width: 260px; margin-bottom: 0; }
+
       .kanban-grid { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; }
       .kanban-column { min-width: 260px; }
 
@@ -1476,10 +1519,16 @@
           <div class="card" style="flex:1; min-height:0;">
             <div class="card-body" style="display:flex; flex-direction:column; gap:12px; height:100%;">
               <div class="contacts-toolbar">
-                <input type="text" class="search-box" id="contactsSearch" placeholder="Pesquisar contatos..." oninput="renderContactsList()">
+                <input type="text" class="search-box" id="contactsSearch" placeholder="Pesquisar contatos..." oninput="onContactsSearchInput()">
                 <div id="googleContactsStatus" class="text-muted" style="font-size:0.85rem;">Google: -</div>
+                <label class="text-muted" style="font-size:0.85rem; display:flex; align-items:center; gap:8px; white-space:nowrap;">
+                  <input type="checkbox" id="googleAutoSaveToggle" onchange="toggleGoogleAutoSave()">
+                  Salvar no Google
+                </label>
+                <div id="contactsCountHint" class="text-muted" style="font-size:0.85rem; white-space:nowrap;">0/0</div>
                 <button class="btn-secondary-c" onclick="connectGoogleContacts()"><i class="fab fa-google"></i>Conectar</button>
                 <button class="btn-primary-c" onclick="syncGoogleContacts()"><i class="fas fa-rotate"></i>Sincronizar</button>
+                <button class="btn-secondary-c" onclick="loadAllContacts()">Ver todos</button>
                 <button class="btn-secondary-c" onclick="loadRealContacts()">Atualizar</button>
               </div>
               <div id="contactsList" class="scheduled-list" style="flex:1; min-height:0; overflow:auto;"></div>
@@ -1502,7 +1551,18 @@
               <div style="flex:1;"></div>
               <input type="text" class="search-box" id="kanbanSearch" placeholder="Pesquisar no Kanban..." oninput="renderKanban()">
             </div>
-            <div id="kanbanBoard" class="kanban-grid"></div>
+            <div class="kanban-layout">
+              <div class="kanban-pool">
+                <div class="kanban-pool-head">
+                  <span>Lista geral</span>
+                  <span class="kanban-status-pill" id="kanbanPoolCount">0</span>
+                </div>
+                <div id="kanbanPoolList" class="kanban-pool-list"
+                  ondragover="kanbanDragOver(event)" ondrop="kanbanPoolDrop(event)"
+                  ondragenter="kanbanDragEnter(event)" ondragleave="kanbanDragLeave(event)"></div>
+              </div>
+              <div id="kanbanBoard" class="kanban-grid" style="flex:1; min-width:0;"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -2138,6 +2198,9 @@
     let SCHED_BOUND = false;
     let KANBAN_CACHE = null;
     let KANBAN_CONTACTS = [];
+    let KANBAN_CHAT_META = new Map();
+    let CONTACTS_PAGE = { q: '', offset: 0, limit: 100, total: 0, hasMore: false, loading: false, loadAll: false };
+    let CONTACTS_SEARCH_TIMER = null;
     let WINBACK_DRAFT = null;
     let WINBACK_CAMPAIGNS = [];
     let WINBACK_SELECTED_ID = null;
@@ -2557,6 +2620,24 @@
       const created = await createRes.json().catch(() => ({}));
       if (created?.sessionId) currentSessionId = created.sessionId;
       return currentSessionId;
+    }
+
+    async function ensureSelectedSession() {
+      if (currentSessionId) return currentSessionId;
+      try {
+        const token = localStorage.getItem('token');
+        const sessionsRes = await fetch('/api/active-sessions', { headers: { 'Authorization': `Bearer ${token}` } });
+        const sessions = await sessionsRes.json().catch(() => ([]));
+        if (Array.isArray(sessions) && sessions.length) {
+          const preferred = sessions.find(s => (s.status || '') === 'connected') || sessions[0];
+          if (preferred?.id) {
+            currentSessionId = preferred.id;
+            try { bindRealtimeSession(); } catch {}
+            return currentSessionId;
+          }
+        }
+      } catch {}
+      return null;
     }
 
     async function forceConnectWhatsApp() {
@@ -4121,8 +4202,10 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.error) return alert(data?.error || 'Falha ao salvar contato');
         closeSaveContactModal();
-        if (document.getElementById('contacts-page')?.classList?.contains('active')) loadRealContacts();
-        alert('Contato salvo!');
+        if (document.getElementById('contacts-page')?.classList?.contains('active')) loadRealContacts({ reset: true });
+        if (data?.googleSync && data.googleSync.ok) alert('Contato salvo (Google atualizado)!');
+        else if (data?.googleSync && data.googleSync.ok === false) alert(`Contato salvo, mas falhou ao salvar no Google: ${data.googleSync.error || 'erro'}`);
+        else alert('Contato salvo!');
       } catch {
         alert('Falha ao salvar contato');
       }
@@ -4373,6 +4456,7 @@
     async function loadRealContacts() {
       const el = document.getElementById('contactsList');
       if (!el) return;
+      const opts = arguments?.[0] || {};
       el.innerHTML = '<div class="text-muted" style="text-align:center; padding:16px;">Carregando...</div>';
       if (!currentSessionId) {
         CONTACTS_CACHE = [];
@@ -4381,34 +4465,76 @@
       }
       try {
         const token = localStorage.getItem('token');
-        const res = await fetch(`/api/contacts/${encodeURIComponent(currentSessionId)}`, {
+        const q = (opts?.query !== undefined) ? String(opts.query || '').trim() : (document.getElementById('contactsSearch')?.value || '').toString().trim();
+        const reset = (opts?.reset !== undefined) ? !!opts.reset : true;
+        const loadAll = !!opts?.loadAll;
+        if (reset) {
+          CONTACTS_PAGE.offset = 0;
+          CONTACTS_CACHE = [];
+        }
+        CONTACTS_PAGE.q = q;
+        CONTACTS_PAGE.loading = true;
+        CONTACTS_PAGE.loadAll = CONTACTS_PAGE.loadAll || loadAll;
+        CONTACTS_PAGE.limit = CONTACTS_PAGE.loadAll ? 1000 : 100;
+        const url = new URL(`/api/contacts/${encodeURIComponent(currentSessionId)}`, location.origin);
+        url.searchParams.set('limit', String(CONTACTS_PAGE.limit));
+        url.searchParams.set('offset', String(CONTACTS_PAGE.offset));
+        if (q) url.searchParams.set('q', q);
+        const res = await fetch(url.toString(), {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json().catch(() => ([]));
-        CONTACTS_CACHE = Array.isArray(data) ? data : [];
+        if (Array.isArray(data)) {
+          CONTACTS_CACHE = data;
+          CONTACTS_PAGE.total = data.length;
+          CONTACTS_PAGE.offset = data.length;
+          CONTACTS_PAGE.hasMore = false;
+        } else {
+          const items = Array.isArray(data?.items) ? data.items : [];
+          const total = Number(data?.total || 0) || 0;
+          CONTACTS_PAGE.total = total;
+          CONTACTS_CACHE = (CONTACTS_CACHE || []).concat(items);
+          CONTACTS_PAGE.offset = CONTACTS_CACHE.length;
+          CONTACTS_PAGE.hasMore = CONTACTS_PAGE.offset < total;
+        }
       } catch {
         CONTACTS_CACHE = [];
+        CONTACTS_PAGE.total = 0;
+        CONTACTS_PAGE.offset = 0;
+        CONTACTS_PAGE.hasMore = false;
+      } finally {
+        CONTACTS_PAGE.loading = false;
       }
       loadGoogleContactsStatus();
       renderContactsList();
+      if (CONTACTS_PAGE.loadAll && CONTACTS_PAGE.hasMore) {
+        const maxPages = 30;
+        for (let i = 0; i < maxPages; i++) {
+          if (!CONTACTS_PAGE.hasMore) break;
+          await new Promise(r => setTimeout(r, 0));
+          await loadRealContacts({ reset: false, query: CONTACTS_PAGE.q });
+        }
+        CONTACTS_PAGE.loadAll = false;
+        CONTACTS_PAGE.limit = 100;
+      }
     }
 
     function renderContactsList() {
       const el = document.getElementById('contactsList');
       if (!el) return;
-      const q = (document.getElementById('contactsSearch')?.value || '').toString().trim().toLowerCase();
+      const hint = document.getElementById('contactsCountHint');
+      if (hint) hint.textContent = `${(CONTACTS_CACHE || []).length}/${CONTACTS_PAGE.total || (CONTACTS_CACHE || []).length || 0}`;
       const rows = (CONTACTS_CACHE || []).slice().sort((a, b) => (Date.parse(b?.updatedAt || '') || 0) - (Date.parse(a?.updatedAt || '') || 0));
-      const filtered = q ? rows.filter(c => {
-        const name = (c?.name || '').toString().toLowerCase();
-        const number = (c?.number || '').toString().toLowerCase();
-        const waId = (c?.waId || c?.id || '').toString().toLowerCase();
-        const note = (c?.note || '').toString().toLowerCase();
-        return name.includes(q) || number.includes(q) || waId.includes(q) || note.includes(q);
-      }) : rows;
+      const filtered = rows;
       if (!filtered.length) {
         el.innerHTML = '<div class="text-muted" style="text-align:center; padding:16px;">Nenhum contato salvo.</div>';
         return;
       }
+      const loadMore = CONTACTS_PAGE.hasMore ? `
+        <div style="display:flex; justify-content:center; padding: 10px 0;">
+          <button class="btn-secondary-c" onclick="loadMoreContacts()" ${CONTACTS_PAGE.loading ? 'disabled' : ''}>Carregar mais</button>
+        </div>
+      ` : '';
       el.innerHTML = filtered.map(c => {
         const waId = (c?.waId || c?.id || '').toString();
         const name = (c?.name || waId || 'Contato').toString();
@@ -4432,7 +4558,31 @@
             </div>
           </div>
         `;
-      }).join('');
+      }).join('') + loadMore;
+    }
+
+    function onContactsSearchInput() {
+      if (CONTACTS_SEARCH_TIMER) { clearTimeout(CONTACTS_SEARCH_TIMER); CONTACTS_SEARCH_TIMER = null; }
+      CONTACTS_SEARCH_TIMER = setTimeout(() => {
+        CONTACTS_SEARCH_TIMER = null;
+        CONTACTS_PAGE.offset = 0;
+        CONTACTS_PAGE.hasMore = false;
+        CONTACTS_PAGE.loadAll = false;
+        loadRealContacts({ reset: true });
+      }, 260);
+    }
+
+    function loadMoreContacts() {
+      if (CONTACTS_PAGE.loading) return;
+      if (!CONTACTS_PAGE.hasMore) return;
+      loadRealContacts({ reset: false, query: CONTACTS_PAGE.q });
+    }
+
+    function loadAllContacts() {
+      CONTACTS_PAGE.offset = 0;
+      CONTACTS_PAGE.hasMore = false;
+      CONTACTS_PAGE.loadAll = true;
+      loadRealContacts({ reset: true, loadAll: true });
     }
 
     function openChatFromContact(waId, name) {
@@ -4459,9 +4609,33 @@
         const res = await fetch('/api/google/status', { headers: { 'Authorization': `Bearer ${token}` } });
         const data = await res.json().catch(() => ({}));
         el.textContent = data?.connected ? 'Google: conectado' : 'Google: desconectado';
+        const toggle = document.getElementById('googleAutoSaveToggle');
+        if (toggle) {
+          toggle.disabled = !data?.connected;
+          toggle.checked = !!data?.prefs?.googleAutoSaveContacts;
+        }
       } catch {
         el.textContent = 'Google: erro';
       }
+    }
+
+    async function toggleGoogleAutoSave() {
+      const toggle = document.getElementById('googleAutoSaveToggle');
+      if (!toggle) return;
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/google/prefs', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ googleAutoSaveContacts: !!toggle.checked })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) throw new Error(data?.error || 'Falha');
+      } catch {
+        toggle.checked = !toggle.checked;
+        alert('Falha ao salvar configuração');
+      }
+      loadGoogleContactsStatus();
     }
 
     let GOOGLE_OAUTH_LAST = null;
@@ -4540,7 +4714,7 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.error) return alert(data?.error || 'Falha ao sincronizar');
         alert(`Sincronizado! Importados: ${data.imported || 0} • Atualizados: ${data.updated || 0}`);
-        loadRealContacts();
+        loadRealContacts({ reset: true });
       } catch {
         alert('Falha ao sincronizar');
       }
@@ -4559,26 +4733,57 @@
     async function loadKanban() {
       const board = document.getElementById('kanbanBoard');
       if (!board) return;
+      if (!currentSessionId) await ensureSelectedSession();
       if (!currentSessionId) {
-        KANBAN_CACHE = kanbanDefault();
-        KANBAN_CONTACTS = [];
-        renderKanban();
+        board.innerHTML = '<div class="text-muted" style="padding:16px;">Selecione uma sessão do WhatsApp.</div>';
         return;
       }
       board.innerHTML = '<div class="text-muted" style="padding:16px;">Carregando...</div>';
       try {
         const token = localStorage.getItem('token');
-        const [kanbanRes, contactsRes] = await Promise.all([
+        const [kanbanRes, contactsRes, chatsRes] = await Promise.all([
           fetch(`/api/kanban/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } }),
-          fetch(`/api/contacts/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } })
+          fetch(`/api/contacts/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } }),
+          fetch(`/api/whatsapp/chats?sessionId=${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } })
         ]);
         const kanbanData = await kanbanRes.json().catch(() => (null));
         const contactsData = await contactsRes.json().catch(() => ([]));
+        const chatsData = await chatsRes.json().catch(() => ([]));
         KANBAN_CACHE = (kanbanData && Array.isArray(kanbanData.columns)) ? kanbanData : kanbanDefault();
-        KANBAN_CONTACTS = Array.isArray(contactsData) ? contactsData : [];
+        const contacts = Array.isArray(contactsData) ? contactsData : [];
+        const chats = Array.isArray(chatsData) ? chatsData : [];
+        KANBAN_CHAT_META = new Map();
+        for (const ch of chats) {
+          const id = (ch?.id || '').toString();
+          if (!id) continue;
+          KANBAN_CHAT_META.set(id, {
+            ts: Number(ch?.timestamp || 0) || 0,
+            unread: Number(ch?.unread || 0) || 0,
+            lastBody: (ch?.lastMessage?.body || '').toString()
+          });
+        }
+        const byId = new Map();
+        for (const c of contacts) {
+          const id = (c?.waId || c?.id || '').toString();
+          if (id) byId.set(id, c);
+        }
+        for (const ch of chats) {
+          if (ch?.isGroup) continue;
+          const id = (ch?.id || '').toString();
+          if (!id) continue;
+          const existing = byId.get(id);
+          if (existing) {
+            if (!existing.name && ch?.name) existing.name = ch.name;
+            if (!existing.number && ch?.number) existing.number = String(ch.number);
+          } else {
+            byId.set(id, { id, waId: id, name: (ch?.name || id).toString(), number: (ch?.number || parseNumberFromChatId(id) || '').toString(), note: '' });
+          }
+        }
+        KANBAN_CONTACTS = Array.from(byId.values());
       } catch {
         if (!KANBAN_CACHE) KANBAN_CACHE = kanbanDefault();
         if (!Array.isArray(KANBAN_CONTACTS)) KANBAN_CONTACTS = [];
+        if (!(KANBAN_CHAT_META instanceof Map)) KANBAN_CHAT_META = new Map();
       }
 
       let changed = false;
@@ -4589,20 +4794,6 @@
           delete c.contacts;
           delete c.items;
           changed = true;
-        }
-      }
-      const assigned = new Set();
-      for (const col of cols) for (const id of (col.chats || [])) assigned.add(String(id));
-      const first = cols[0];
-      if (first) {
-        for (const contact of (KANBAN_CONTACTS || [])) {
-          const id = (contact?.waId || contact?.id || '').toString();
-          if (!id) continue;
-          if (!assigned.has(id)) {
-            first.chats.push(id);
-            assigned.add(id);
-            changed = true;
-          }
         }
       }
       if (changed) {
@@ -4621,6 +4812,8 @@
     function renderKanban() {
       const board = document.getElementById('kanbanBoard');
       if (!board) return;
+      const pool = document.getElementById('kanbanPoolList');
+      const poolCount = document.getElementById('kanbanPoolCount');
       const q = (document.getElementById('kanbanSearch')?.value || '').toString().trim().toLowerCase();
       const data = KANBAN_CACHE || kanbanDefault();
       const cols = Array.isArray(data?.columns) ? data.columns : [];
@@ -4628,6 +4821,78 @@
       for (const c of (KANBAN_CONTACTS || [])) {
         const id = (c?.waId || c?.id || '').toString();
         if (id) contactMap.set(id, c);
+      }
+
+      const tagMap = new Map();
+      for (const col of cols) {
+        const colId = (col?.id || '').toString();
+        const colName = (col?.name || '').toString();
+        const color = (col?.color || '').toString();
+        for (const id of (Array.isArray(col?.chats) ? col.chats : [])) {
+          const k = String(id);
+          if (!tagMap.has(k)) tagMap.set(k, { colId, colName, color });
+        }
+      }
+
+      if (pool) {
+        const allIds = Array.from(contactMap.keys());
+        const filtered = q ? allIds.filter(id => {
+          const c = contactMap.get(String(id)) || {};
+          const name = (c?.name || '').toString().toLowerCase();
+          const num = (c?.number || '').toString().toLowerCase();
+          const wa = (c?.waId || c?.id || id || '').toString().toLowerCase();
+          const note = (c?.note || '').toString().toLowerCase();
+          const meta = (KANBAN_CHAT_META instanceof Map) ? (KANBAN_CHAT_META.get(String(id)) || {}) : {};
+          const lastBody = (meta?.lastBody || '').toString().toLowerCase();
+          return name.includes(q) || num.includes(q) || wa.includes(q) || note.includes(q) || lastBody.includes(q);
+        }) : allIds;
+
+        filtered.sort((a, b) => {
+          const ta = (KANBAN_CHAT_META instanceof Map) ? Number(KANBAN_CHAT_META.get(String(a))?.ts || 0) : 0;
+          const tb = (KANBAN_CHAT_META instanceof Map) ? Number(KANBAN_CHAT_META.get(String(b))?.ts || 0) : 0;
+          return tb - ta;
+        });
+
+        if (poolCount) poolCount.textContent = String(filtered.length);
+        pool.innerHTML = filtered.map(id => {
+          const c = contactMap.get(String(id)) || {};
+          const name = (c?.name || id).toString();
+          const number = (c?.number || '').toString();
+          const note = (c?.note || '').toString();
+          const waId = (c?.waId || c?.id || id).toString();
+          const meta = (KANBAN_CHAT_META instanceof Map) ? (KANBAN_CHAT_META.get(String(id)) || {}) : {};
+          const unread = Number(meta?.unread || 0) || 0;
+          const lastBody = (meta?.lastBody || '').toString().replace(/\s+/g, ' ').trim();
+          const title = number ? `+${digitsOnly(number)}` : '';
+          const tag = tagMap.get(String(id)) || null;
+          const tagLabel = tag?.colName ? tag.colName : 'Sem etiqueta';
+          const tagColor = (tag?.color || '').toString() || '#f0f2f5';
+          const idEnc = encodeURIComponent(String(id));
+          const nameEnc = encodeURIComponent(name);
+          const fromColEnc = encodeURIComponent('__pool__');
+          const parts = [
+            title ? `Número: ${title}` : 'Número: -',
+            note ? `Obs: ${note}` : '',
+            lastBody ? `Última: ${lastBody.length > 60 ? lastBody.slice(0, 60) + '…' : lastBody}` : '',
+            unread ? `Não lidas: ${unread}` : ''
+          ].filter(Boolean);
+          return `
+            <div class="kanban-card" draggable="true" data-id="${escapeHtml(String(id))}"
+              ondragstart="kanbanDragStart(event,'${fromColEnc}','${idEnc}')" ondragend="kanbanDragEnd(event)">
+              <div class="title">
+                <span>${escapeHtml(name)}</span>
+                <span class="kanban-status-pill" style="background:${escapeHtml(tagColor)}">${escapeHtml(tagLabel)}</span>
+              </div>
+              <div class="sub">${escapeHtml(parts.join(' • '))}</div>
+              <div class="actions">
+                <button class="icon-btn sched" title="Agendar" onclick="kanbanOpenSchedule('${idEnc}')"><i class="fas fa-clock"></i></button>
+                <button class="icon-btn chat" title="Abrir conversa" onclick="openChatFromContact('${idEnc}','${nameEnc}')"><i class="fas fa-comment"></i></button>
+              </div>
+            </div>
+          `;
+        }).join('') || '<div class="text-muted" style="text-align:center; padding: 16px;">Nenhuma conversa encontrada</div>';
+      } else {
+        if (poolCount) poolCount.textContent = '0';
       }
 
       board.innerHTML = cols.map(col => {
@@ -4638,7 +4903,9 @@
           const num = (c?.number || '').toString().toLowerCase();
           const wa = (c?.waId || c?.id || id || '').toString().toLowerCase();
           const note = (c?.note || '').toString().toLowerCase();
-          return name.includes(q) || num.includes(q) || wa.includes(q) || note.includes(q);
+          const meta = (KANBAN_CHAT_META instanceof Map) ? (KANBAN_CHAT_META.get(String(id)) || {}) : {};
+          const lastBody = (meta?.lastBody || '').toString().toLowerCase();
+          return name.includes(q) || num.includes(q) || wa.includes(q) || note.includes(q) || lastBody.includes(q);
         }) : ids;
         const count = visible.length;
         const headColor = (col?.color || '').toString() || '#128c7e';
@@ -4664,10 +4931,15 @@
                 const note = (c?.note || '').toString();
                 const waId = (c?.waId || c?.id || id).toString();
                 const title = number ? `+${digitsOnly(number)}` : '';
+                const meta = (KANBAN_CHAT_META instanceof Map) ? (KANBAN_CHAT_META.get(String(id)) || {}) : {};
+                const lastBody = (meta?.lastBody || '').toString().replace(/\s+/g, ' ').trim();
+                const unread = Number(meta?.unread || 0) || 0;
                 const sub = [
                   title ? `Número: ${title}` : 'Número: -',
                   waId ? `LID: ${waId}` : '',
-                  note ? `Obs: ${note}` : ''
+                  note ? `Obs: ${note}` : '',
+                  lastBody ? `Última: ${lastBody.length > 60 ? lastBody.slice(0, 60) + '…' : lastBody}` : '',
+                  unread ? `Não lidas: ${unread}` : ''
                 ].filter(Boolean).join(' • ');
                 const fromColEnc = encodeURIComponent((col?.id || '').toString());
                 const idEnc = encodeURIComponent(String(id));
@@ -4721,21 +4993,42 @@
     async function kanbanMove(chatId, fromColId, toColId) {
       const data = KANBAN_CACHE || kanbanDefault();
       const cols = Array.isArray(data?.columns) ? data.columns : [];
-      const from = cols.find(c => String(c?.id || '') === String(fromColId));
       const to = cols.find(c => String(c?.id || '') === String(toColId));
-      if (!from || !to) return;
-      from.chats = (from.chats || []).filter(x => String(x) !== String(chatId));
+      if (!to) return;
+      for (const c of cols) c.chats = (c.chats || []).filter(x => String(x) !== String(chatId));
       if (!to.chats) to.chats = [];
       if (!to.chats.some(x => String(x) === String(chatId))) to.chats.push(chatId);
       KANBAN_CACHE = data;
       renderKanban();
       try {
         const token = localStorage.getItem('token');
-        await fetch(`/api/kanban/${encodeURIComponent(currentSessionId)}/move`, {
+        await fetch(`/api/kanban/${encodeURIComponent(currentSessionId)}`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chatId, fromColumn: fromColId, toColumn: toColId })
-        });
+          body: JSON.stringify(KANBAN_CACHE)
+        }).catch(() => {});
+      } catch {}
+    }
+
+    async function kanbanPoolDrop(e) {
+      try { e.preventDefault(); } catch {}
+      try { e.currentTarget?.classList?.remove('drag-over'); } catch {}
+      let payload = null;
+      try { payload = JSON.parse(e.dataTransfer.getData('text/plain') || '{}'); } catch {}
+      const id = (payload?.id || '').toString();
+      if (!id) return;
+      const data = KANBAN_CACHE || kanbanDefault();
+      const cols = Array.isArray(data?.columns) ? data.columns : [];
+      for (const c of cols) c.chats = (c.chats || []).filter(x => String(x) !== String(id));
+      KANBAN_CACHE = data;
+      renderKanban();
+      try {
+        const token = localStorage.getItem('token');
+        await fetch(`/api/kanban/${encodeURIComponent(currentSessionId)}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(KANBAN_CACHE)
+        }).catch(() => {});
       } catch {}
     }
 
