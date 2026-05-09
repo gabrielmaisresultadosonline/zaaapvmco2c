@@ -362,9 +362,12 @@ function normalizeOAuthRedirectUri(u) {
     const host = (url.hostname || '').toLowerCase();
     if (host && host !== 'localhost' && host !== '127.0.0.1') url.protocol = 'https:';
     url.hash = '';
-    return url.toString().replace(/\/+$/, '');
+    if (url.pathname === '/') return url.toString().replace(/\/+$/, '');
+    return url.toString();
   } catch {
-    return raw.replace(/\/+$/, '');
+    if (raw === '/') return '';
+    if (/^https?:\/\/[^/]+\/?$/.test(raw)) return raw.replace(/\/+$/, '');
+    return raw;
   }
 }
 
@@ -1352,7 +1355,7 @@ route('GET', '/administrativo.html', (req, res) => {
   html(res, adminPageHtml());
 });
 
-route('GET', '/auth/google/callback', async (req, res) => {
+async function handleGoogleOAuthCallback(req, res) {
   const qs = new URL(req.url, 'http://x').searchParams;
   const code = (qs.get('code') || '').toString();
   const state = (qs.get('state') || '').toString();
@@ -1403,7 +1406,10 @@ route('GET', '/auth/google/callback', async (req, res) => {
   } catch (e) {
     html(res, `<h1>Falha</h1><p>${escapeHtmlServer(e?.message || 'Erro')}</p>`, 500);
   }
-});
+}
+
+route('GET', '/auth/google/callback', handleGoogleOAuthCallback);
+route('GET', '/auth/google/callback/', handleGoogleOAuthCallback);
 
 // ── Auth ─────────────────────────────────────────────────────────────
 route('POST', '/api/auth/register', async (req, res) => {

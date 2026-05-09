@@ -4448,7 +4448,9 @@
         if (data?.redirectUri) {
           console.log('Google redirectUri:', data.redirectUri);
         }
-        window.open(data.url, '_blank', 'noopener,noreferrer,width=520,height=720');
+        console.log('Google OAuth URL:', data.url);
+        const w = window.open(data.url, '_blank', 'noopener,noreferrer,width=520,height=720');
+        if (!w) location.href = data.url;
       } catch {
         alert('Falha ao iniciar conexão Google');
       }
