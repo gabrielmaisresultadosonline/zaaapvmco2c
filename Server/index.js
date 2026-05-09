@@ -394,11 +394,12 @@ function resolveGoogleRedirectUri(req) {
     'https://zapmro.com.br/auth/google/callback'
   ].filter(Boolean);
   for (const c of candidates) {
-    const v = normalizeOAuthRedirectUri(c);
+    let v = normalizeOAuthRedirectUri(c);
+    v = v.replace(/\/auth\/google\/callback\/$/, '/auth/google/callback');
     if (!allowLocal && isLocalhostUrl(v)) continue;
     return v;
   }
-  return normalizeOAuthRedirectUri(candidates[0] || 'https://zapmro.com.br/auth/google/callback');
+  return normalizeOAuthRedirectUri(candidates[0] || 'https://zapmro.com.br/auth/google/callback').replace(/\/auth\/google\/callback\/$/, '/auth/google/callback');
 }
 
 // ── DB ────────────────────────────────────────────────────────────────
