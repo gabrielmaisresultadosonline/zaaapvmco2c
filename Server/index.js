@@ -895,6 +895,9 @@ function adminPageHtml() {
               <tbody id="usersTbody"></tbody>
             </table>
           </div>
+          <div style="height:14px"></div>
+          <div style="font-weight:1000; margin-bottom:8px">Histórico do administrativo</div>
+          <div id="auditBox" class="muted" style="font-size:0.9rem; line-height:1.4">Carregando...</div>
         </div>
       </div>
       <div class="card">
@@ -992,6 +995,7 @@ function adminPageHtml() {
     const ADMIN_USER_KEY = 'zapmro_admin_user';
     let ADMIN_TOKEN = localStorage.getItem(ADMIN_TOKEN_KEY) || '';
     let OVERVIEW = null;
+    let AUDIT = [];
     let SELECTED_SESSION = '';
     let CHATS = [];
     let SELECTED_CHAT = '';
@@ -1071,9 +1075,37 @@ function adminPageHtml() {
         document.getElementById('totalsSmall').textContent = (data.totals?.historyChats ? ('Leads: ' + data.totals.historyChats) : '');
         renderUsers();
         renderSessionSelect();
+        await loadAudit();
+        renderAudit();
       } catch {
         showLogin('Falha ao carregar painel');
       }
+    }
+
+    async function loadAudit() {
+      try {
+        const res = await fetch('/api/admin/audit', { headers: authHeaders() });
+        const data = await res.json().catch(()=>({}));
+        if (!res.ok || !data.ok) { AUDIT = []; return; }
+        AUDIT = Array.isArray(data.items) ? data.items : [];
+      } catch {
+        AUDIT = [];
+      }
+    }
+
+    function renderAudit() {
+      const el = document.getElementById('auditBox');
+      if (!el) return;
+      if (!AUDIT.length) { el.textContent = 'Sem ações registradas.'; return; }
+      el.innerHTML = AUDIT.slice(0, 50).map(a => {
+        const at = a?.createdAt ? fmtDate(a.createdAt) : (a?.ts ? fmtDate(new Date(Number(a.ts)).toISOString()) : '-');
+        const act = (a?.action || '').toString();
+        const meta = a?.meta ? JSON.stringify(a.meta) : '';
+        return '<div style="padding:8px 0;border-bottom:1px solid #f0f0f0">' +
+          '<div style="font-weight:900">' + esc(act || '-') + '</div>' +
+          '<div class="muted" style="font-size:.82rem">' + esc(at) + (meta ? (' • ' + esc(meta)) : '') + '</div>' +
+        '</div>';
+      }).join('');
     }
 
     function renderUsers() {
@@ -1519,6 +1551,13 @@ route('GET', '/api/admin/overview', (req, res) => {
   };
   appendAdminAudit(u.id, 'overview', { totals });
   json(res, { ok: true, totals, users, sessions, waBySession });
+});
+
+route('GET', '/api/admin/audit', (req, res) => {
+  const u = requireSuperAdmin(req, res); if (!u) return;
+  const items = db.load('admin_audit', []);
+  const out = Array.isArray(items) ? items.slice(-200).reverse() : [];
+  json(res, { ok: true, items: out });
 });
 
 route('POST', '/api/admin/users/:id/disable', (req, res) => {
