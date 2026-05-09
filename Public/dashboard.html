@@ -2266,6 +2266,9 @@
     let DASH_OVERVIEW_CACHE = null;
     let DASH_SLIDE_IDX = 0;
     let DASH_SLIDE_TIMER = null;
+    let DASH_AUTO_TIMER = null;
+    let WINBACK_AUTO_TIMER = null;
+    let REALTIME_REFRESH_TIMER = null;
     let WINBACK_DRAFT = null;
     let WINBACK_CAMPAIGNS = [];
     let WINBACK_SELECTED_ID = null;
@@ -2314,6 +2317,7 @@
           updateStatusBadge();
           setInterval(updateStatusBadge, 5000);
           initRealtime();
+          startAutoRefresh();
         } else {
           loadAIConfig();
           setStatusBadge('disconnected');
@@ -2365,10 +2369,17 @@
           const chatId = payload.chatId;
           const m = payload.message || {};
           onRealtimeMessage(chatId, m);
+          scheduleRealtimeRefresh('new-message');
         });
         socket.on('activity', (p) => {
           if (p?.sessionId !== currentSessionId) return;
           if (p?.item) addDashboardActivityItem(p.item, true);
+          scheduleRealtimeRefresh('activity');
+        });
+        socket.on('winback-log', (p) => {
+          if (p?.sessionId !== currentSessionId) return;
+          if (p?.item) addWinbackLogItem(p.campaignId, p.item, true);
+          scheduleRealtimeRefresh('winback-log');
         });
         socket.on('ready', (p) => {
           if (p?.sessionId === currentSessionId) {
@@ -2391,6 +2402,38 @@
         });
       }
       bindRealtimeSession();
+    }
+
+    function stopAutoRefresh() {
+      if (DASH_AUTO_TIMER) { clearInterval(DASH_AUTO_TIMER); DASH_AUTO_TIMER = null; }
+      if (WINBACK_AUTO_TIMER) { clearInterval(WINBACK_AUTO_TIMER); WINBACK_AUTO_TIMER = null; }
+      if (REALTIME_REFRESH_TIMER) { clearTimeout(REALTIME_REFRESH_TIMER); REALTIME_REFRESH_TIMER = null; }
+    }
+
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      if (!currentSessionId) return;
+      DASH_AUTO_TIMER = setInterval(() => {
+        scheduleRealtimeRefresh('auto');
+      }, 8000);
+      WINBACK_AUTO_TIMER = setInterval(() => {
+        if (!currentSessionId) return;
+        if ((document.getElementById('winback-page')?.classList?.contains('active')) && WINBACK_SELECTED_ID) {
+          loadWinbackSendHistory();
+        }
+      }, 9000);
+    }
+
+    function scheduleRealtimeRefresh(reason) {
+      if (!currentSessionId) return;
+      if (REALTIME_REFRESH_TIMER) { clearTimeout(REALTIME_REFRESH_TIMER); REALTIME_REFRESH_TIMER = null; }
+      REALTIME_REFRESH_TIMER = setTimeout(() => {
+        REALTIME_REFRESH_TIMER = null;
+        refreshDashboard();
+        if ((document.getElementById('winback-page')?.classList?.contains('active')) && WINBACK_SELECTED_ID) {
+          loadWinbackSendHistory();
+        }
+      }, 450);
     }
 
     function bindRealtimeSession() {
@@ -2863,6 +2906,7 @@
       if (pageId === 'ai') { loadAIConfig(); loadAIHistorySummary(); }
       if (pageId === 'settings') { loadSettingsPage(); }
       if (pageId === 'winback') { loadWinbackDraft(); loadWinbackCampaigns(); }
+      if (pageId === 'dashboard') refreshDashboard();
       setChatMobileOpen(false);
       if (isMobileViewport()) closeSidebar();
     }
@@ -3028,6 +3072,42 @@
       const children = el.querySelectorAll('.dash-activity-item');
       if (children.length > 80) {
         for (let i = 80; i < children.length; i++) children[i]?.remove?.();
+      }
+    }
+
+    function addWinbackLogItem(campaignId, item, prepend) {
+      const box = document.getElementById('winbackSendHistory');
+      if (!box) return;
+      if (!WINBACK_SELECTED_ID) return;
+      if (String(WINBACK_SELECTED_ID) !== String(campaignId || '')) return;
+      const it = item || {};
+      const status = (it?.status || '').toString();
+      const chatId = (it?.chatId || '').toString();
+      const title = (it?.title || '').toString();
+      const preview = (it?.preview || '').toString();
+      const err = (it?.error || '').toString();
+      const ts = Number(it?.ts || 0) || 0;
+      const time = ts ? new Date(ts).toLocaleString('pt-BR') : '';
+      const badge = status === 'sent' ? '✅' : status === 'fail' ? '❌' : status === 'start' ? '▶️' : status === 'stop' ? '⏸️' : status === 'end' ? '🏁' : '•';
+      const sub = [chatId ? `Chat: ${chatId}` : '', preview ? `Msg: ${preview}` : '', err ? `Erro: ${err}` : ''].filter(Boolean).join(' • ');
+      const html = `
+        <div class="scheduled-item">
+          <div class="meta">
+            <div class="title">${escapeHtml(`${badge} ${title}`)}</div>
+            <div class="sub">${escapeHtml(sub)}</div>
+          </div>
+          <div class="actions">
+            <div class="text-muted" style="font-size:0.82rem;">${escapeHtml(time)}</div>
+          </div>
+        </div>
+      `;
+      const empty = (box.textContent || '').toString().includes('Nenhum envio registrado');
+      if (empty) box.innerHTML = '';
+      if (!prepend) { box.insertAdjacentHTML('beforeend', html); return; }
+      box.insertAdjacentHTML('afterbegin', html);
+      const children = box.querySelectorAll('.scheduled-item');
+      if (children.length > 200) {
+        for (let i = 200; i < children.length; i++) children[i]?.remove?.();
       }
     }
 
