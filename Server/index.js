@@ -354,6 +354,17 @@ function isLocalhostUrl(u) {
 function normalizeOAuthRedirectUri(u) {
   let raw = (u || '').toString().trim();
   if (!raw) return '';
+  for (let i = 0; i < 3; i++) {
+    const t = raw.trim();
+    const first = t[0];
+    const last = t[t.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'") || (first === '`' && last === '`')) {
+      raw = t.slice(1, -1).trim();
+      continue;
+    }
+    break;
+  }
+  raw = raw.replace(/`/g, '').trim();
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) && !raw.startsWith('/')) {
     raw = `https://${raw.replace(/^\/+/, '')}`;
   }
