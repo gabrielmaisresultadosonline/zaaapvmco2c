@@ -14,6 +14,7 @@ const __dirname = dirname(__filename);
 const ROOT = join(__dirname, '..');
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'zapmro-2024-secret';
+const META_VERIFY_TOKEN = (process.env.ZAPMRO_META_VERIFY_TOKEN || 'ZAPMRO_META_VERIFY_2025').toString().trim();
 
 // ── Optional package imports (graceful degradation) ──────────────────
 let express, Server, Client, LocalAuth, qrcode, OpenAI, cron, multer, bcryptjs, jwt, createClient, uuid;
@@ -1893,6 +1894,88 @@ route('POST', '/api/google/prefs', (req, res) => {
   const googleAutoSaveContacts = !!req.body?.googleAutoSaveContacts;
   const prefs = saveUserPrefs(u.id, { googleAutoSaveContacts });
   json(res, { ok: true, prefs });
+});
+
+function appendMetaWebhookEvent(event) {
+  try {
+    const arr = db.load('meta_webhook_events', []);
+    const next = Array.isArray(arr) ? arr : [];
+    next.push(event);
+    if (next.length > 2000) next.splice(0, next.length - 2000);
+    db.save('meta_webhook_events', next);
+  } catch {}
+}
+
+function metaWebhookVerifyHandler(req, res) {
+  const qs = new URL(req.url, 'http://x').searchParams;
+  const mode = (qs.get('hub.mode') || '').toString();
+  const token = (qs.get('hub.verify_token') || '').toString();
+  const challenge = (qs.get('hub.challenge') || '').toString();
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(challenge);
+    return;
+  }
+  res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Forbidden');
+}
+
+route('GET', '/api/meta/webhook', metaWebhookVerifyHandler);
+route('GET', '/api/meta/webhook/', metaWebhookVerifyHandler);
+
+route('POST', '/api/meta/webhook', (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('OK');
+  const payload = req.body || {};
+  setImmediate(() => {
+    try {
+      const nowIso = new Date().toISOString();
+      const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+      for (const entry of entries) {
+        const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+        for (const ch of changes) {
+          const field = (ch?.field || '').toString();
+          const value = ch?.value || {};
+          const messages = Array.isArray(value?.messages) ? value.messages : [];
+          const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+          for (const m of messages) {
+            const from = digitsOnly(m?.from || '');
+            const textBody = (m?.text?.body || '').toString();
+            const type = (m?.type || (textBody ? 'text' : '')).toString();
+            appendMetaWebhookEvent({
+              kind: 'message',
+              field,
+              from: from || null,
+              waId: from ? `${from}@c.us` : null,
+              type: type || null,
+              text: textBody || null,
+              ts: Date.now(),
+              createdAt: nowIso
+            });
+          }
+          for (const s of statuses) {
+            const recipient = digitsOnly(s?.recipient_id || '');
+            appendMetaWebhookEvent({
+              kind: 'status',
+              field,
+              messageId: (s?.id || '').toString() || null,
+              recipient: recipient || null,
+              status: (s?.status || '').toString() || null,
+              ts: Date.now(),
+              createdAt: nowIso
+            });
+          }
+        }
+      }
+    } catch {}
+  });
+});
+route('POST', '/api/meta/webhook/', routes.POST['/api/meta/webhook']);
+
+route('GET', '/meta-webhook', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const callback = 'https://zapmro.com.br/api/meta/webhook';
+  html(res, `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ZAPMRO | Meta Webhook</title><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2064%2064%27%3E%3Ccircle%20cx=%2732%27%20cy=%2732%27%20r=%2730%27%20fill=%27%2325d366%27/%3E%3Cpath%20fill=%27%23ffffff%27%20d=%27M42.5%2036.8c-1.1-.6-2.5-1.3-3.7-1.8-.4-.2-.9-.1-1.2.2l-2%202.4c-.3.3-.7.4-1.1.3-2.7-1.1-5.9-4.2-7-7-.1-.4%200-.8.3-1.1l2.4-2c.3-.3.4-.8.2-1.2-.5-1.2-1.2-2.6-1.8-3.7-.2-.4-.6-.7-1.1-.7H23c-.6%200-1.1.4-1.2%201-1.1%206.3%201%2012.6%205.9%2017.5%204.9%204.9%2011.2%207%2017.5%205.9.6-.1%201-.6%201-1.2v-3.1c0-.5-.3-.9-.7-1.1z%27/%3E%3C/svg%3E"><style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:40px auto;padding:0 16px;line-height:1.5;color:#111}h1{margin:0 0 12px}code{background:#f0f2f5;padding:2px 6px;border-radius:8px}a{color:#128c7e} .box{border:1px solid #e0e0e0;border-radius:14px;padding:14px;background:#fff} .k{font-weight:900;margin-bottom:6px} .v{word-break:break-all}</style></head><body><h1>Meta WhatsApp Cloud API — Webhook</h1><div class="box"><div class="k">Callback URL</div><div class="v"><code>${escapeHtmlServer(callback)}</code></div><div style="height:12px"></div><div class="k">Verify Token</div><div class="v"><code>${escapeHtmlServer(META_VERIFY_TOKEN)}</code></div><div style="height:12px"></div><div class="k">Teste rápido (GET)</div><div class="v"><code>${escapeHtmlServer(callback)}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(META_VERIFY_TOKEN)}&hub.challenge=123456</code></div><div style="height:12px"></div><div class="v">A Meta precisa receber <code>123456</code> como resposta.</div></div><div style="height:14px"></div><a href="/dashboard.html">Voltar</a></body></html>`);
 });
 
 route('GET', '/api/dashboard/overview/:sessionId', async (req, res) => {
