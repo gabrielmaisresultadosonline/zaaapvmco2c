@@ -1262,8 +1262,8 @@
       .dash-widgets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .dash-grid { grid-template-columns: 1fr; }
 
-      #qrModal, #chatFlowsModal, #startFlowModal, #saveContactModal, #userMenuModal { padding: 12px !important; }
-      #qrModal > div, #chatFlowsModal > div, #startFlowModal > div, #saveContactModal > div, #userMenuModal > div {
+      #metaConnectModal, #chatFlowsModal, #startFlowModal, #saveContactModal, #userMenuModal { padding: 12px !important; }
+      #metaConnectModal > div, #chatFlowsModal > div, #startFlowModal > div, #saveContactModal > div, #userMenuModal > div {
         width: 100%;
         max-width: 96vw;
         margin: 4vh auto 0;
@@ -1381,7 +1381,7 @@
         <i class="fas fa-home" id="pageIcon"></i>
         Dashboard
       </div>
-      <div class="status-badge" id="statusBadge" style="cursor:pointer" onclick="openQrModal()">
+      <div class="status-badge" id="statusBadge" style="cursor:pointer" onclick="openMetaConnectModal()">
         <div class="status-dot"></div>
         <span id="statusText">Conectado</span>
       </div>
@@ -1479,7 +1479,7 @@
                 <div style="padding: 30px 15px; text-align: center; color: #999;">
                   <i class="fas fa-message" style="font-size: 2rem; opacity: 0.3; display: block; margin-bottom: 10px;"></i>
                   <p style="margin: 0;">Nenhum chat disponível</p>
-                  <p style="font-size: 0.85rem; margin: 5px 0 0;">Escaneie o QR code para conectar ao WhatsApp</p>
+                  <p style="font-size: 0.85rem; margin: 5px 0 0;">Conecte pela Meta API Oficial para carregar suas conversas</p>
                 </div>
               </div>
             </div>
@@ -2082,9 +2082,9 @@
                 <label>Número</label>
                 <div class="value" id="settingsWaNumber">-</div>
               </div>
-              <div class="text-muted" style="font-size:0.82rem;">O WhatsApp fica vinculado à sessão selecionada.</div>
+              <div class="text-muted" style="font-size:0.82rem;">A conexão é feita pela Meta API Oficial (Cloud API).</div>
               <button id="settingsWaConnectBtn" onclick="connectWhatsApp()" style="width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; margin-top: 10px; display:none;">
-                <i class="fab fa-whatsapp" style="margin-right: 8px;"></i> Conectar WhatsApp
+                <i class="fab fa-facebook" style="margin-right: 8px;"></i> Conectar via Meta
               </button>
             </div>
           </div>
@@ -2093,26 +2093,33 @@
     </div>
   </div>
 
-  <div id="qrModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9999; padding:20px;">
-    <div style="max-width: 420px; margin: 6vh auto 0; background: white; border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
+  <div id="metaConnectModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9999; padding:20px;">
+    <div style="max-width: 720px; margin: 6vh auto 0; background: white; border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 10px;">
-        <div style="font-weight:800; color:#111b21;">Conectar WhatsApp</div>
-        <button onclick="closeQrModal()" style="border:none; background:#f0f2f5; border-radius:10px; padding:8px 10px; font-weight:700; cursor:pointer;">Fechar</button>
+        <div style="font-weight:900; color:#111b21;">Conectar WhatsApp (Meta API Oficial)</div>
+        <button onclick="closeMetaConnectModal()" style="border:none; background:#f0f2f5; border-radius:10px; padding:8px 10px; font-weight:800; cursor:pointer;">Fechar</button>
       </div>
-      <div id="qrStatusLine" style="font-size:0.9rem; color:#667781; margin-bottom: 12px;">Carregando…</div>
-      <div style="background:#f7f7f7; border-radius: 14px; padding: 14px; display:flex; align-items:center; justify-content:center; min-height: 320px;">
-        <img id="qrImg" src="" alt="QR Code" style="display:none; width: 280px; height: 280px; object-fit: contain; border-radius: 12px; background:white;">
-        <div id="qrEmpty" style="text-align:center; color:#667781;">
-          <div style="font-weight:800; color:#111b21; margin-bottom:8px;">Aguardando QR…</div>
-          <div style="font-size:0.85rem; line-height:1.4;">Se não aparecer, clique em “Forçar conectar”.</div>
-        </div>
+      <div class="text-muted" style="font-size:0.85rem; line-height:1.35; margin-bottom: 12px;">
+        Esta versão usa a API Oficial (Cloud API). Não usamos mais QR Code.
       </div>
-      <div style="display:flex; gap:10px; margin-top: 14px;">
-        <button onclick="forceConnectWhatsApp()" style="flex:1; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 12px; cursor: pointer; font-weight: 800;">Forçar conectar</button>
-        <button onclick="resetWhatsAppSession()" style="padding: 12px; background: #e74c3c; color: white; border: none; border-radius: 12px; cursor: pointer; font-weight: 800;">Reset</button>
+      <div class="contact-field" style="margin-top:0;">
+        <label>Callback URL</label>
+        <div class="value" id="metaCallbackUrl" style="word-break:break-all;">-</div>
       </div>
-      <div style="margin-top: 10px; font-size:0.8rem; color:#667781; line-height:1.35;">
-        Abra o WhatsApp no celular → Aparelhos conectados → Conectar um aparelho → aponte a câmera para o QR.
+      <div class="contact-field">
+        <label>Verify Token</label>
+        <div class="value" id="metaVerifyToken" style="word-break:break-all;">ZAPMRO_META_VERIFY_2025</div>
+      </div>
+      <div class="text-muted" style="font-size:0.82rem; line-height:1.35;">
+        Na Meta, configure Webhooks com o Callback URL e o Verify Token. A validação precisa responder com o hub.challenge.
+      </div>
+      <div style="display:flex; gap:10px; margin-top: 14px; flex-wrap:wrap;">
+        <button class="btn-secondary-c" style="flex:1; justify-content:center; min-width: 200px;" onclick="copyMetaCallbackUrl()">Copiar Callback</button>
+        <button class="btn-secondary-c" style="flex:1; justify-content:center; min-width: 200px;" onclick="copyMetaVerifyToken()">Copiar Token</button>
+        <button class="btn-primary-c" style="flex:1; justify-content:center; min-width: 200px;" onclick="openMetaWebhookInfo()">Abrir página Meta</button>
+      </div>
+      <div class="text-muted" style="font-size:0.8rem; margin-top: 10px; line-height:1.35;">
+        Dica: se você usa domínio separado para API (ex.: api.zapmro.com.br), o Callback URL deve apontar para o domínio que recebe o webhook.
       </div>
     </div>
   </div>
@@ -2369,8 +2376,8 @@
         <div style="padding: 30px 15px; text-align: center; color: #999;">
           <i class="fab fa-whatsapp" style="font-size: 2.2rem; opacity: 0.25; display: block; margin-bottom: 10px;"></i>
           <p style="margin: 0; font-weight: 700; color: #666;">Conecte o WhatsApp para ver os chats</p>
-          <p style="font-size: 0.85rem; margin: 8px 0 12px; line-height: 1.4;">Clique no status do topo ou no botão abaixo para abrir o QR.</p>
-          <button class="btn-primary-c" style="display:inline-flex; align-items:center; gap:8px; justify-content:center;" onclick="openQrModal()">
+          <p style="font-size: 0.85rem; margin: 8px 0 12px; line-height: 1.4;">Clique no status do topo ou no botão abaixo para conectar pela Meta API Oficial.</p>
+          <button class="btn-primary-c" style="display:inline-flex; align-items:center; gap:8px; justify-content:center;" onclick="openMetaConnectModal()">
             <i class="fab fa-whatsapp"></i> Conectar WhatsApp
           </button>
         </div>
@@ -2714,8 +2721,9 @@
       let t = label || 'Conectado';
       let bg = '#27ae60';
       if (status === 'connected') { t = label || 'Conectado'; bg = '#27ae60'; }
-      else if (status === 'qr') { t = label || 'QR Code'; bg = '#f39c12'; badge.classList.add('connecting'); }
-      else if (status === 'initializing' || status === 'connecting') { t = label || 'Conectando'; bg = '#f39c12'; badge.classList.add('connecting'); }
+      else if (status === 'meta') { t = label || 'Meta API'; bg = '#3498db'; badge.classList.add('connecting'); }
+      else if (status === 'qr') { t = label || 'Meta API'; bg = '#3498db'; badge.classList.add('connecting'); }
+      else if (status === 'initializing' || status === 'connecting') { t = label || 'Aguardando Meta'; bg = '#3498db'; badge.classList.add('connecting'); }
       else if (status === 'disconnected') { t = label || 'Desconectado'; bg = '#e74c3c'; badge.classList.add('disconnected'); }
       else if (status === 'error') { t = label || 'Erro'; bg = '#e74c3c'; badge.classList.add('disconnected'); }
       txt.textContent = t;
@@ -2736,17 +2744,39 @@
       }
     }
 
-    function openQrModal() {
-      const modal = document.getElementById('qrModal');
+    function openMetaConnectModal() {
+      const modal = document.getElementById('metaConnectModal');
+      if (!modal) return;
+      const cb = document.getElementById('metaCallbackUrl');
+      if (cb) cb.textContent = `${location.origin}/api/meta/webhook`;
       modal.style.display = 'block';
-      pollQr(true);
     }
 
-    function closeQrModal() {
-      const modal = document.getElementById('qrModal');
+    function closeMetaConnectModal() {
+      const modal = document.getElementById('metaConnectModal');
+      if (!modal) return;
       modal.style.display = 'none';
-      if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
     }
+
+    function openMetaWebhookInfo() {
+      try { window.open('/meta-webhook', '_blank'); } catch {}
+    }
+
+    async function copyMetaCallbackUrl() {
+      const v = `${location.origin}/api/meta/webhook`;
+      try { await navigator.clipboard.writeText(v); } catch {}
+      try { alert('Callback copiado'); } catch {}
+    }
+
+    async function copyMetaVerifyToken() {
+      const el = document.getElementById('metaVerifyToken');
+      const v = (el?.textContent || 'ZAPMRO_META_VERIFY_2025').toString().trim();
+      try { await navigator.clipboard.writeText(v); } catch {}
+      try { alert('Token copiado'); } catch {}
+    }
+
+    function openQrModal() { openMetaConnectModal(); }
+    function closeQrModal() { closeMetaConnectModal(); }
 
     async function ensureSession() {
       const token = localStorage.getItem('token');
@@ -2781,82 +2811,15 @@
     }
 
     async function forceConnectWhatsApp() {
-      try {
-        const token = localStorage.getItem('token');
-        const sid = await ensureSession();
-        if (!sid) return;
-        await fetch('/api/whatsapp/connect', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: sid, force: true })
-        });
-      } catch {
-      }
+      openMetaConnectModal();
     }
 
     async function resetWhatsAppSession() {
-      try {
-        const token = localStorage.getItem('token');
-        const sid = await ensureSession();
-        if (!sid) return;
-        await fetch('/api/whatsapp/reset', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: sid })
-        });
-        pollQr(true);
-      } catch {
-      }
+      openMetaConnectModal();
     }
 
     async function pollQr(forceStart) {
-      if (qrPollTimer && !forceStart) return;
-      if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
-      const statusLine = document.getElementById('qrStatusLine');
-      const img = document.getElementById('qrImg');
-      const empty = document.getElementById('qrEmpty');
-      statusLine.textContent = 'Carregando…';
-      img.style.display = 'none';
-      empty.style.display = 'block';
-
-      await forceConnectWhatsApp();
-
-      const tick = async () => {
-        try {
-          const token = localStorage.getItem('token');
-          if (!currentSessionId) return;
-          const stRes = await fetch(`/api/whatsapp/status/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
-          const st = await stRes.json().catch(() => ({}));
-          setStatusBadge(st.status || 'disconnected');
-          if (st.status === 'connected') {
-            statusLine.textContent = 'Conectado!';
-            closeQrModal();
-            loadRealStats();
-            loadRealChats();
-            loadRealScheduled();
-            loadRealFlows();
-            return;
-          }
-
-          const qrRes = await fetch(`/api/whatsapp/qr/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
-          const qr = await qrRes.json().catch(() => ({}));
-          const has = !!qr.qr;
-          statusLine.textContent = (qr.status === 'qr' || st.status === 'qr') ? 'Escaneie o QR no celular' : (st.status === 'initializing' ? 'Inicializando…' : 'Aguardando QR…');
-          if (has) {
-            img.src = qr.qr;
-            img.style.display = 'block';
-            empty.style.display = 'none';
-          } else {
-            img.style.display = 'none';
-            empty.style.display = 'block';
-          }
-        } catch {
-          statusLine.textContent = 'Erro ao carregar QR';
-        }
-      };
-
-      await tick();
-      qrPollTimer = setInterval(tick, 1200);
+      openMetaConnectModal();
     }
 
     function isMobileViewport() {
@@ -3050,7 +3013,7 @@
     function renderDashboardActivity(items) {
       const el = document.getElementById('dashboardActivityList');
       if (!el) return;
-      const rows = Array.isArray(items) ? items : [];
+      const rows = (Array.isArray(items) ? items : []).filter(it => String(it?.type || '') !== 'wa.qr');
       if (!rows.length) {
         el.innerHTML = '<div class="text-muted" style="text-align:center; padding:16px;">Nenhuma atividade registrada</div>';
         return;
@@ -3081,6 +3044,7 @@
       const it = item || {};
       const title = (it?.title || 'Atividade').toString();
       const type = (it?.type || '').toString();
+      if (type === 'wa.qr') return;
       const meta = it?.meta || null;
       const sub = meta?.chatId ? `Chat: ${meta.chatId}` : meta?.waId ? `Contato: ${meta.waId}` : type;
       const time = timeAgoLabel(it?.ts || it?.createdAt);
@@ -6518,7 +6482,7 @@
     }
 
     async function connectWhatsApp() {
-      openQrModal();
+      openMetaConnectModal();
     }
 
     // Enter key to send message

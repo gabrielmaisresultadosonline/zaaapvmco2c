@@ -15,6 +15,8 @@ const ROOT = join(__dirname, '..');
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'zapmro-2024-secret';
 const META_VERIFY_TOKEN = (process.env.ZAPMRO_META_VERIFY_TOKEN || 'ZAPMRO_META_VERIFY_2025').toString().trim();
+const WA_PROVIDER = (process.env.WA_PROVIDER || 'wwebjs').toString().trim().toLowerCase();
+const WA_USE_WWEBJS = !(WA_PROVIDER === 'meta' || WA_PROVIDER === 'cloud' || WA_PROVIDER === 'official');
 
 // ── Optional package imports (graceful degradation) ──────────────────
 let express, Server, Client, LocalAuth, qrcode, OpenAI, cron, multer, bcryptjs, jwt, createClient, uuid;
@@ -2224,7 +2226,7 @@ route('GET', '/api/active-sessions', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const all = db.load('sessions');
   const sessions = u.role === 'admin' ? all : all.filter(s => s.userId === u.id);
-  json(res, sessions.map(s => ({ ...s, status: waStatus.get(s.id) || s.status || 'disconnected' })));
+  json(res, sessions.map(s => ({ ...s, status: WA_USE_WWEBJS ? (waStatus.get(s.id) || s.status || 'disconnected') : 'meta' })));
 });
 
 route('POST', '/api/create-session', async (req, res) => {
@@ -2245,6 +2247,7 @@ route('POST', '/api/whatsapp/connect', async (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { ok: true, sessionId, provider: 'meta', status: 'meta' });
   if (hasWA) {
     const status = waStatus.get(sessionId);
     const existing = waClients.get(sessionId);
@@ -2262,6 +2265,7 @@ route('GET', '/api/whatsapp/qr/:sessionId', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sid);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { status: 'meta', qr: '' });
   json(res, { status: waStatus.get(sid) || 'disconnected', qr: waLastQr.get(sid)?.qr || '' });
 });
 
@@ -2283,6 +2287,7 @@ route('POST', '/api/whatsapp/reset', async (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { ok: true });
   try {
     await resetWhatsAppAuth(sessionId);
     json(res, { ok: true });
@@ -2307,6 +2312,7 @@ route('GET', '/api/whatsapp/status/:sessionId', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === req.params.sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { status: 'meta', connected: false, provider: 'meta' });
   const status = waStatus.get(req.params.sessionId) || s.status || 'disconnected';
   json(res, { status, connected: status === 'connected' });
 });
@@ -4699,6 +4705,7 @@ if (hasCron) {
 async function restoreSessions() {
   const flag = ((process.env.WA_RESTORE_SESSIONS || '') + '').trim().toLowerCase();
   if (flag === 'false' || flag === '0' || flag === 'no') return;
+  if (!WA_USE_WWEBJS) return;
   if (!hasWA) return;
   const authPath = WA_AUTH_DIR;
   if (!existsSync(authPath)) return;
