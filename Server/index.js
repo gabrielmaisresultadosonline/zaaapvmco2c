@@ -17,6 +17,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'zapmro-2024-secret';
 const META_VERIFY_TOKEN = (process.env.ZAPMRO_META_VERIFY_TOKEN || 'ZAPMRO_META_VERIFY_2025').toString().trim();
 const WA_PROVIDER = (process.env.WA_PROVIDER || 'wwebjs').toString().trim().toLowerCase();
 const WA_USE_WWEBJS = !(WA_PROVIDER === 'meta' || WA_PROVIDER === 'cloud' || WA_PROVIDER === 'official');
+const FB_APP_ID = (process.env.FB_APP_ID || process.env.FACEBOOK_APP_ID || '').toString().trim();
+const FB_APP_SECRET = (process.env.FB_APP_SECRET || process.env.FACEBOOK_APP_SECRET || '').toString().trim();
 
 // ── Optional package imports (graceful degradation) ──────────────────
 let express, Server, Client, LocalAuth, qrcode, OpenAI, cron, multer, bcryptjs, jwt, createClient, uuid;
@@ -1465,6 +1467,67 @@ route('POST', '/api/auth/login', async (req, res) => {
   user.lastLoginAt = new Date().toISOString();
   db.save('users', users);
   json(res, { token: signToken({ id: user.id, email: user.email, role: user.role }), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+});
+
+route('POST', '/api/auth/facebook', async (req, res) => {
+  const accessToken = (req.body?.accessToken || req.body?.access_token || '').toString().trim();
+  const emailOverride = (req.body?.email || '').toString().trim().toLowerCase();
+  const password = (req.body?.password || '').toString();
+  if (!accessToken) return err(res, 'accessToken required', 400);
+  if (!FB_APP_ID || !FB_APP_SECRET) return err(res, 'Facebook Login não configurado (FB_APP_ID/FB_APP_SECRET)', 500);
+
+  try {
+    const dbg = new URL('https://graph.facebook.com/debug_token');
+    dbg.searchParams.set('input_token', accessToken);
+    dbg.searchParams.set('access_token', `${FB_APP_ID}|${FB_APP_SECRET}`);
+    const dbgRes = await fetch(dbg.toString());
+    const dbgJson = await dbgRes.json().catch(() => ({}));
+    const data = dbgJson?.data || null;
+    if (!dbgRes.ok || !data?.is_valid) return err(res, 'Token do Facebook inválido', 401);
+    if (String(data?.app_id || '') !== String(FB_APP_ID)) return err(res, 'Token do Facebook não pertence ao app', 401);
+    const fbUserId = (data?.user_id || '').toString();
+    if (!fbUserId) return err(res, 'Token do Facebook sem user_id', 401);
+
+    const meUrl = new URL('https://graph.facebook.com/me');
+    meUrl.searchParams.set('fields', 'id,name,email');
+    meUrl.searchParams.set('access_token', accessToken);
+    const meRes = await fetch(meUrl.toString());
+    const me = await meRes.json().catch(() => ({}));
+    if (!meRes.ok) return err(res, me?.error?.message || 'Falha ao consultar perfil Facebook', 401);
+
+    const fbId = (me?.id || fbUserId || '').toString();
+    const name = (me?.name || '').toString().trim();
+    const email = ((me?.email || '').toString().trim().toLowerCase()) || emailOverride;
+    if (!email || !email.includes('@')) return err(res, 'Email obrigatório (Facebook não forneceu email)', 400);
+
+    const users = db.load('users');
+    let user = users.find(u => String(u?.facebookId || '') === fbId) || users.find(u => String(u?.email || '').toLowerCase() === email) || null;
+    const nowIso = new Date().toISOString();
+    if (!user) {
+      user = {
+        id: uuid(),
+        name: name || email.split('@')[0],
+        email,
+        facebookId: fbId,
+        password: bcryptjs.hashSync(uuid(), 10),
+        role: 'user',
+        createdAt: nowIso
+      };
+      if (password && password.length >= 6) user.password = bcryptjs.hashSync(password, 10);
+      users.push(user);
+    } else {
+      if (!user.facebookId) user.facebookId = fbId;
+      if (name && (!user.name || user.name === user.email?.split?.('@')?.[0])) user.name = name;
+      if (email && String(user.email || '').toLowerCase() !== email) user.email = email;
+      if (password && password.length >= 6) user.password = bcryptjs.hashSync(password, 10);
+      user.updatedAt = nowIso;
+    }
+    user.lastLoginAt = nowIso;
+    db.save('users', users);
+    json(res, { token: signToken({ id: user.id, email: user.email, role: user.role }), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  } catch (e) {
+    err(res, e?.message || 'Falha ao autenticar com Facebook', 500);
+  }
 });
 
 route('POST', '/api/auth/supabase', async (req, res) => {
