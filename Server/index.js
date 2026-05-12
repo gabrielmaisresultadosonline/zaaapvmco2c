@@ -2141,6 +2141,32 @@ async function fbDebugToken(inputToken) {
   return j.data;
 }
 
+route('POST', '/api/meta/debug-token', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const inputToken = (req.body?.accessToken || req.body?.inputToken || req.body?.token || '').toString().trim();
+  if (!inputToken) return err(res, 'accessToken required', 400);
+  try {
+    const dbg = await fbDebugToken(inputToken);
+    let me = null;
+    try {
+      me = await fbGraphGetJson('me', inputToken, { fields: 'id,name' });
+    } catch {}
+    json(res, {
+      ok: true,
+      appId: String(dbg?.app_id || ''),
+      userId: String(dbg?.user_id || ''),
+      type: String(dbg?.type || ''),
+      expiresAt: dbg?.expires_at ?? null,
+      issuedAt: dbg?.issued_at ?? null,
+      scopes: Array.isArray(dbg?.scopes) ? dbg.scopes : [],
+      granularScopes: Array.isArray(dbg?.granular_scopes) ? dbg.granular_scopes : [],
+      me
+    });
+  } catch (e) {
+    err(res, e?.message || 'Falha ao validar token', 400);
+  }
+});
+
 route('POST', '/api/meta/embedded-signup/finalize', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sessionId = (req.body?.sessionId || '').toString();
