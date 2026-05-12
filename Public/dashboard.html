@@ -2845,6 +2845,8 @@
       const modal = document.getElementById('metaConnectModal');
       if (!modal) return;
       modal.style.display = 'block';
+      const cb = document.getElementById('metaCallbackUrl');
+      if (cb) cb.textContent = `${location.origin}/api/meta/webhook`;
       setMetaConnectUiStatus('Carregando...');
       refreshMetaConnectState();
     }
@@ -2917,7 +2919,13 @@
           }, 1200);
         }, { scope: 'public_profile,email,business_management,whatsapp_business_management', return_scopes: true });
       } catch {
-        setMetaConnectUiStatus('Falha ao iniciar');
+        try {
+          if (!META_EMBED.config) await loadMetaEmbeddedConfig();
+        } catch (e) {
+          setMetaConnectUiStatus((e?.message || 'Falha ao iniciar').toString());
+          return;
+        }
+        setMetaConnectUiStatus('Falha ao iniciar (bloqueio de popup ou SDK)');
       }
     }
 

@@ -19,7 +19,7 @@ const META_CONFIG_ID = (process.env.ZAPMRO_META_CONFIG_ID || '1691744568626778')
 const META_API_VERSION = (process.env.META_API_VERSION || 'v25.0').toString().trim();
 const WA_PROVIDER = (process.env.WA_PROVIDER || 'wwebjs').toString().trim().toLowerCase();
 const WA_USE_WWEBJS = !(WA_PROVIDER === 'meta' || WA_PROVIDER === 'cloud' || WA_PROVIDER === 'official');
-const FB_APP_ID = (process.env.FB_APP_ID || process.env.FACEBOOK_APP_ID || '').toString().trim();
+const FB_APP_ID = (process.env.FB_APP_ID || process.env.FACEBOOK_APP_ID || '1296667748608099').toString().trim();
 const FB_APP_SECRET = (process.env.FB_APP_SECRET || process.env.FACEBOOK_APP_SECRET || '').toString().trim();
 const WA_META_TOKEN = (process.env.WA_META_TOKEN || process.env.META_WA_TOKEN || '').toString().trim();
 
