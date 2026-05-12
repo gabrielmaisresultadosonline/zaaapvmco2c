@@ -2158,6 +2158,48 @@ route('POST', '/api/meta/embedded-signup/finalize', async (req, res) => {
   }
 });
 
+route('POST', '/api/meta/embedded-signup/store', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sessionId = (req.body?.sessionId || '').toString();
+  const wabaId = (req.body?.wabaId || req.body?.waba_id || '').toString();
+  const phoneNumberId = (req.body?.phoneNumberId || req.body?.phone_number_id || '').toString();
+  if (!sessionId || !wabaId || !phoneNumberId) return err(res, 'sessionId/wabaId/phoneNumberId required', 400);
+
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+
+  let displayPhoneNumber = null;
+  let verifiedName = null;
+  try {
+    if (WA_META_TOKEN) {
+      const info = await fbGraphGetJson(phoneNumberId, WA_META_TOKEN, { fields: 'display_phone_number,verified_name' });
+      displayPhoneNumber = (info?.display_phone_number || '').toString() || null;
+      verifiedName = (info?.verified_name || '').toString() || null;
+    }
+  } catch {}
+
+  setMetaAccountForSession(sessionId, {
+    userId: s.userId,
+    sessionId,
+    wabaId,
+    phoneNumberId,
+    displayPhoneNumber,
+    verifiedName,
+    updatedAt: new Date().toISOString()
+  });
+
+  try {
+    s.status = 'connected';
+    s.number = displayPhoneNumber || s.number || '';
+    s.updatedAt = new Date().toISOString();
+    db.save('sessions', sessions);
+  } catch {}
+
+  appendActivity(sessionId, u.id, 'meta.connected', 'Meta API conectada', { wabaId, phoneNumberId });
+  json(res, { ok: true, wabaId, phoneNumberId, displayPhoneNumber, verifiedName });
+});
+
 route('GET', '/api/meta/self/:sessionId', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const sid = req.params.sessionId;

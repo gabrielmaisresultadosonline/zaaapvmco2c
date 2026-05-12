@@ -2772,8 +2772,31 @@
       popup: null,
       poll: null,
       sdkReady: false,
-      sdkPromise: null
+      sdkPromise: null,
+      pending: null
     };
+
+    window.addEventListener('message', (event) => {
+      try {
+        const origin = (event?.origin || '').toString();
+        if (!origin.includes('facebook.com')) return;
+        let data = event?.data;
+        if (typeof data === 'string') {
+          try { data = JSON.parse(data); } catch {}
+        }
+        if (!data || typeof data !== 'object') return;
+        const type = (data?.type || data?.event || '').toString();
+        const ev = (data?.event || data?.type || '').toString();
+        const payload = data?.data || data;
+        const wabaId = (payload?.waba_id || payload?.wabaId || '').toString();
+        const phoneNumberId = (payload?.phone_number_id || payload?.phoneNumberId || '').toString();
+        if (!wabaId || !phoneNumberId) return;
+        if (META_EMBED?.pending && typeof META_EMBED.pending.resolve === 'function') {
+          META_EMBED.pending.resolve({ wabaId, phoneNumberId, raw: data, origin, type, event: ev });
+          META_EMBED.pending = null;
+        }
+      } catch {}
+    });
 
     function ensureFacebookSdk() {
       if (META_EMBED.sdkPromise) return META_EMBED.sdkPromise;
@@ -2875,49 +2898,55 @@
         setMetaConnectUiStatus('Preparando...');
         if (!META_EMBED.config) await loadMetaEmbeddedConfig();
         await ensureFacebookSdk();
-        setMetaConnectUiStatus('Abrindo Facebook...');
+        setMetaConnectUiStatus('Abrindo onboarding Meta...');
+
+        if (META_EMBED.pending && typeof META_EMBED.pending.reject === 'function') {
+          try { META_EMBED.pending.reject(new Error('cancelled')); } catch {}
+        }
+        const p = new Promise((resolve, reject) => {
+          META_EMBED.pending = { resolve, reject };
+          setTimeout(() => {
+            if (META_EMBED.pending?.reject === reject) {
+              META_EMBED.pending = null;
+              reject(new Error('timeout'));
+            }
+          }, 4 * 60 * 1000);
+        });
+
         FB.login(function(response) {
           const auth = response?.authResponse || null;
-          if (!auth?.accessToken) {
+          if (!auth) {
             setMetaConnectUiStatus('Login cancelado');
+            if (META_EMBED.pending?.reject) META_EMBED.pending.reject(new Error('cancelled'));
+            META_EMBED.pending = null;
             return;
           }
-          META_EMBED.accessToken = auth.accessToken;
-          const url = META_EMBED?.config?.onboardingUrl;
-          if (!url) { setMetaConnectUiStatus('Onboarding indisponível'); return; }
-          try {
-            META_EMBED.popup = window.open(url, 'zapmro_meta_onboard', 'width=1100,height=760');
-          } catch {
-            META_EMBED.popup = null;
-          }
-          setMetaConnectUiStatus('Conclua o onboarding e feche a janela');
-          if (META_EMBED.poll) { try { clearInterval(META_EMBED.poll); } catch {} }
-          META_EMBED.poll = setInterval(async () => {
-            try {
-              if (META_EMBED.popup && !META_EMBED.popup.closed) return;
-              clearInterval(META_EMBED.poll);
-              META_EMBED.poll = null;
-              setMetaConnectUiStatus('Finalizando...');
-              const token = localStorage.getItem('token');
-              const r = await fetch('/api/meta/embedded-signup/finalize', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId: currentSessionId, accessToken: META_EMBED.accessToken })
-              });
-              const data = await r.json().catch(() => ({}));
-              if (!r.ok || !data?.ok) {
-                setMetaConnectUiStatus(data?.error || 'Falha ao finalizar');
-                return;
-              }
-              setMetaConnectUiStatus('Conectado');
-              await refreshMetaConnectState();
-              await updateStatusBadge();
-              try { await loadSettingsWhatsAppStatus(); } catch {}
-            } catch {
-              setMetaConnectUiStatus('Falha ao finalizar');
-            }
-          }, 1200);
-        }, { scope: 'public_profile,email,business_management,whatsapp_business_management', return_scopes: true });
+        }, {
+          scope: 'whatsapp_business_management,whatsapp_business_messaging',
+          return_scopes: true,
+          config_id: META_EMBED?.config?.configId,
+          response_type: 'code',
+          override_default_response_type: true,
+          extras: { setup: {} }
+        });
+
+        const ids = await p;
+        setMetaConnectUiStatus('Salvando conexão...');
+        const token = localStorage.getItem('token');
+        const r = await fetch('/api/meta/embedded-signup/store', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId, wabaId: ids.wabaId, phoneNumberId: ids.phoneNumberId })
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data?.ok) {
+          setMetaConnectUiStatus(data?.error || 'Falha ao salvar');
+          return;
+        }
+        setMetaConnectUiStatus('Conectado');
+        await refreshMetaConnectState();
+        await updateStatusBadge();
+        try { await loadSettingsWhatsAppStatus(); } catch {}
       } catch {
         try {
           if (!META_EMBED.config) await loadMetaEmbeddedConfig();
@@ -2925,7 +2954,7 @@
           setMetaConnectUiStatus((e?.message || 'Falha ao iniciar').toString());
           return;
         }
-        setMetaConnectUiStatus('Falha ao iniciar (bloqueio de popup ou SDK)');
+        setMetaConnectUiStatus('Falha ao iniciar (permissões do App Meta)');
       }
     }
 
