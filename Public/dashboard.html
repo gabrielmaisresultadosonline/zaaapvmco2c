@@ -2927,6 +2927,8 @@
           config_id: META_EMBED?.config?.configId,
           response_type: 'code',
           override_default_response_type: true,
+          redirect_uri: `${location.origin}/oauth.php`,
+          fallback_redirect_uri: `${location.origin}/oauth.php`,
           extras: { setup: {} }
         });
 
