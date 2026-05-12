@@ -1432,6 +1432,41 @@ async function handleGoogleOAuthCallback(req, res) {
 route('GET', '/auth/google/callback', handleGoogleOAuthCallback);
 route('GET', '/auth/google/callback/', handleGoogleOAuthCallback);
 
+function oauthRedirectLandingHtml(provider) {
+  const p = (provider || 'oauth').toString();
+  return `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Autenticação</title></head><body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px"><h3>Concluindo autenticação…</h3><p>Você pode fechar esta janela.</p><script>
+(()=> {
+  const qs = new URLSearchParams(location.search);
+  const payload = {
+    type: 'oauth_result',
+    provider: ${JSON.stringify(p)},
+    code: qs.get('code'),
+    state: qs.get('state'),
+    error: qs.get('error'),
+    errorReason: qs.get('error_reason'),
+    errorDescription: qs.get('error_description'),
+    ts: Date.now()
+  };
+  try { if (window.opener && typeof window.opener.postMessage === 'function') window.opener.postMessage(payload, location.origin); } catch {}
+  try { if (window.opener && typeof window.opener.postMessage === 'function') window.opener.postMessage(payload, '*'); } catch {}
+  try { if (window.parent && window.parent !== window && typeof window.parent.postMessage === 'function') window.parent.postMessage(payload, location.origin); } catch {}
+  try { if (window.parent && window.parent !== window && typeof window.parent.postMessage === 'function') window.parent.postMessage(payload, '*'); } catch {}
+  setTimeout(() => {
+    try { window.close(); } catch {}
+    setTimeout(() => { try { location.href = '/dashboard.html'; } catch {} }, 200);
+  }, 350);
+})();
+</script></body></html>`;
+}
+
+route('GET', '/oauth.php', (req, res) => {
+  html(res, oauthRedirectLandingHtml('facebook'));
+});
+route('GET', '/auth/facebook/callback', (req, res) => {
+  html(res, oauthRedirectLandingHtml('facebook'));
+});
+route('GET', '/auth/facebook/callback/', routes.GET['/auth/facebook/callback']);
+
 // ── Auth ─────────────────────────────────────────────────────────────
 route('POST', '/api/auth/register', async (req, res) => {
   const { name, email, password, promoCode } = req.body;
