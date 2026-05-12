@@ -15,10 +15,13 @@ const ROOT = join(__dirname, '..');
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'zapmro-2024-secret';
 const META_VERIFY_TOKEN = (process.env.ZAPMRO_META_VERIFY_TOKEN || 'ZAPMRO_META_VERIFY_2025').toString().trim();
+const META_CONFIG_ID = (process.env.ZAPMRO_META_CONFIG_ID || '1691744568626778').toString().trim();
+const META_API_VERSION = (process.env.META_API_VERSION || 'v25.0').toString().trim();
 const WA_PROVIDER = (process.env.WA_PROVIDER || 'wwebjs').toString().trim().toLowerCase();
 const WA_USE_WWEBJS = !(WA_PROVIDER === 'meta' || WA_PROVIDER === 'cloud' || WA_PROVIDER === 'official');
 const FB_APP_ID = (process.env.FB_APP_ID || process.env.FACEBOOK_APP_ID || '').toString().trim();
 const FB_APP_SECRET = (process.env.FB_APP_SECRET || process.env.FACEBOOK_APP_SECRET || '').toString().trim();
+const WA_META_TOKEN = (process.env.WA_META_TOKEN || process.env.META_WA_TOKEN || '').toString().trim();
 
 // ── Optional package imports (graceful degradation) ──────────────────
 let express, Server, Client, LocalAuth, qrcode, OpenAI, cron, multer, bcryptjs, jwt, createClient, uuid;
@@ -1961,6 +1964,54 @@ route('POST', '/api/google/prefs', (req, res) => {
   json(res, { ok: true, prefs });
 });
 
+function getMetaAccountsStore() {
+  const raw = db.load('meta_accounts', {});
+  if (!raw || typeof raw !== 'object') return { bySession: {}, byPhoneNumberId: {} };
+  const bySession = raw?.bySession && typeof raw.bySession === 'object' ? raw.bySession : {};
+  const byPhoneNumberId = raw?.byPhoneNumberId && typeof raw.byPhoneNumberId === 'object' ? raw.byPhoneNumberId : {};
+  return { bySession, byPhoneNumberId };
+}
+
+function saveMetaAccountsStore(store) {
+  const safe = store && typeof store === 'object' ? store : { bySession: {}, byPhoneNumberId: {} };
+  if (!safe.bySession || typeof safe.bySession !== 'object') safe.bySession = {};
+  if (!safe.byPhoneNumberId || typeof safe.byPhoneNumberId !== 'object') safe.byPhoneNumberId = {};
+  db.save('meta_accounts', safe);
+  return safe;
+}
+
+function getMetaAccountForSession(sessionId) {
+  if (!sessionId) return null;
+  const store = getMetaAccountsStore();
+  const item = store.bySession?.[String(sessionId)] || null;
+  return item && typeof item === 'object' ? item : null;
+}
+
+function setMetaAccountForSession(sessionId, item) {
+  const sid = String(sessionId || '');
+  if (!sid) return;
+  const store = getMetaAccountsStore();
+  const next = {
+    ...store,
+    bySession: { ...store.bySession },
+    byPhoneNumberId: { ...store.byPhoneNumberId }
+  };
+  const prev = next.bySession[sid] || null;
+  if (prev?.phoneNumberId) {
+    delete next.byPhoneNumberId[String(prev.phoneNumberId)];
+  }
+  const val = item && typeof item === 'object' ? item : {};
+  next.bySession[sid] = val;
+  if (val?.phoneNumberId) next.byPhoneNumberId[String(val.phoneNumberId)] = sid;
+  saveMetaAccountsStore(next);
+}
+
+function resolveMetaSessionIdFromPhoneNumberId(phoneNumberId) {
+  const store = getMetaAccountsStore();
+  const sid = store.byPhoneNumberId?.[String(phoneNumberId || '')] || null;
+  return sid ? String(sid) : null;
+}
+
 function appendMetaWebhookEvent(event) {
   try {
     const arr = db.load('meta_webhook_events', []);
@@ -1988,6 +2039,143 @@ function metaWebhookVerifyHandler(req, res) {
 route('GET', '/api/meta/webhook', metaWebhookVerifyHandler);
 route('GET', '/api/meta/webhook/', metaWebhookVerifyHandler);
 
+route('GET', '/api/meta/embedded-signup/config', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  if (!FB_APP_ID) return err(res, 'FB_APP_ID não configurado', 500);
+  const extras = encodeURIComponent(JSON.stringify({ setup: {}, sessionInfoVersion: '3', version: 'v4' }));
+  const url = `https://business.facebook.com/messaging/whatsapp/onboard/?app_id=${encodeURIComponent(FB_APP_ID)}&config_id=${encodeURIComponent(META_CONFIG_ID)}&extras=${extras}`;
+  json(res, {
+    ok: true,
+    appId: FB_APP_ID,
+    configId: META_CONFIG_ID,
+    onboardingUrl: url,
+    webhookUrl: 'https://zapmro.com.br/api/meta/webhook',
+    verifyToken: META_VERIFY_TOKEN
+  });
+});
+
+async function fbGraphGetJson(path, accessToken, params = {}) {
+  const u = new URL(`https://graph.facebook.com/${META_API_VERSION}/${path}`);
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v === undefined || v === null) continue;
+    u.searchParams.set(k, String(v));
+  }
+  u.searchParams.set('access_token', accessToken);
+  const r = await fetch(u.toString());
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || 'Falha Graph API');
+  return j;
+}
+
+async function fbDebugToken(inputToken) {
+  if (!FB_APP_ID || !FB_APP_SECRET) throw new Error('Facebook Login não configurado (FB_APP_ID/FB_APP_SECRET)');
+  const dbg = new URL('https://graph.facebook.com/debug_token');
+  dbg.searchParams.set('input_token', inputToken);
+  dbg.searchParams.set('access_token', `${FB_APP_ID}|${FB_APP_SECRET}`);
+  const r = await fetch(dbg.toString());
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || 'Falha debug_token');
+  if (!j?.data?.is_valid) throw new Error('Token do Facebook inválido');
+  if (String(j?.data?.app_id || '') !== String(FB_APP_ID)) throw new Error('Token do Facebook não pertence ao app');
+  return j.data;
+}
+
+route('POST', '/api/meta/embedded-signup/finalize', async (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sessionId = (req.body?.sessionId || '').toString();
+  const accessToken = (req.body?.accessToken || '').toString().trim();
+  if (!sessionId || !accessToken) return err(res, 'sessionId/accessToken required', 400);
+
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sessionId);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+
+  try {
+    await fbDebugToken(accessToken);
+    const businesses = await fbGraphGetJson('me/businesses', accessToken, { fields: 'id,name', limit: 50 });
+    const bizList = Array.isArray(businesses?.data) ? businesses.data : [];
+
+    let picked = null;
+    for (const b of bizList) {
+      const bid = (b?.id || '').toString();
+      if (!bid) continue;
+      let wabas = null;
+      try {
+        wabas = await fbGraphGetJson(`${bid}/owned_whatsapp_business_accounts`, accessToken, { fields: 'id,name', limit: 50 });
+      } catch {
+        continue;
+      }
+      const wabaList = Array.isArray(wabas?.data) ? wabas.data : [];
+      for (const w of wabaList) {
+        const wabaId = (w?.id || '').toString();
+        if (!wabaId) continue;
+        let phones = null;
+        try {
+          phones = await fbGraphGetJson(`${wabaId}/phone_numbers`, accessToken, { fields: 'id,display_phone_number,verified_name', limit: 50 });
+        } catch {
+          continue;
+        }
+        const phoneList = Array.isArray(phones?.data) ? phones.data : [];
+        if (phoneList.length) {
+          const p = phoneList[0];
+          picked = {
+            businessId: bid,
+            wabaId,
+            phoneNumberId: (p?.id || '').toString(),
+            displayPhoneNumber: (p?.display_phone_number || '').toString() || null,
+            verifiedName: (p?.verified_name || '').toString() || null
+          };
+          break;
+        }
+      }
+      if (picked) break;
+    }
+
+    if (!picked?.phoneNumberId || !picked?.wabaId) return err(res, 'Não encontrei WABA/Phone Number. Conclua o onboarding e tente novamente.', 400);
+
+    setMetaAccountForSession(sessionId, {
+      userId: s.userId,
+      sessionId,
+      businessId: picked.businessId,
+      wabaId: picked.wabaId,
+      phoneNumberId: picked.phoneNumberId,
+      displayPhoneNumber: picked.displayPhoneNumber,
+      verifiedName: picked.verifiedName,
+      updatedAt: new Date().toISOString()
+    });
+
+    try {
+      s.status = 'connected';
+      s.number = picked.displayPhoneNumber || s.number || '';
+      s.updatedAt = new Date().toISOString();
+      db.save('sessions', sessions);
+    } catch {}
+
+    appendActivity(sessionId, u.id, 'meta.connected', 'Meta API conectada', { wabaId: picked.wabaId, phoneNumberId: picked.phoneNumberId });
+    json(res, { ok: true, ...picked });
+  } catch (e) {
+    err(res, e?.message || 'Falha ao finalizar Embedded Signup', 500);
+  }
+});
+
+route('GET', '/api/meta/self/:sessionId', (req, res) => {
+  const u = requireAuth(req, res); if (!u) return;
+  const sid = req.params.sessionId;
+  const sessions = db.load('sessions');
+  const s = sessions.find(x => x.id === sid);
+  if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  const meta = getMetaAccountForSession(sid);
+  const connected = !!meta?.phoneNumberId;
+  json(res, {
+    connected,
+    provider: 'meta',
+    number: meta?.displayPhoneNumber || s?.number || null,
+    verifiedName: meta?.verifiedName || null,
+    wabaId: meta?.wabaId || null,
+    phoneNumberId: meta?.phoneNumberId || null
+  });
+});
+
 route('POST', '/api/meta/webhook', (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('OK');
@@ -2001,6 +2189,8 @@ route('POST', '/api/meta/webhook', (req, res) => {
         for (const ch of changes) {
           const field = (ch?.field || '').toString();
           const value = ch?.value || {};
+          const phoneNumberId = (value?.metadata?.phone_number_id || '').toString() || null;
+          const sessionId = phoneNumberId ? resolveMetaSessionIdFromPhoneNumberId(phoneNumberId) : null;
           const messages = Array.isArray(value?.messages) ? value.messages : [];
           const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
           for (const m of messages) {
@@ -2010,6 +2200,8 @@ route('POST', '/api/meta/webhook', (req, res) => {
             appendMetaWebhookEvent({
               kind: 'message',
               field,
+              sessionId,
+              phoneNumberId,
               from: from || null,
               waId: from ? `${from}@c.us` : null,
               type: type || null,
@@ -2023,6 +2215,8 @@ route('POST', '/api/meta/webhook', (req, res) => {
             appendMetaWebhookEvent({
               kind: 'status',
               field,
+              sessionId,
+              phoneNumberId,
               messageId: (s?.id || '').toString() || null,
               recipient: recipient || null,
               status: (s?.status || '').toString() || null,
@@ -2049,7 +2243,8 @@ route('GET', '/api/dashboard/overview/:sessionId', async (req, res) => {
   const sessions = db.load('sessions');
   const sess = sessions.find(x => x.id === sid);
   if (!sess || (sess.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
-  const connected = (waStatus.get(sid) || sess.status || 'disconnected') === 'connected';
+  const metaAcc = !WA_USE_WWEBJS ? getMetaAccountForSession(sid) : null;
+  const connected = WA_USE_WWEBJS ? ((waStatus.get(sid) || sess.status || 'disconnected') === 'connected') : !!metaAcc?.phoneNumberId;
   const contactsTotal = db.load('contacts', []).filter(c => String(c?.sessionId || '') === String(sid)).length;
   const kanban = db.load('kanban', {})?.[sid] || null;
   const cols = Array.isArray(kanban?.columns) ? kanban.columns : [];
@@ -2069,23 +2264,48 @@ route('GET', '/api/dashboard/overview/:sessionId', async (req, res) => {
   let responseRate = 0;
   let waNumber = null;
   let waPushname = null;
-  try {
-    const client = waClients.get(sid);
-    const info = client?.info || null;
-    waNumber = info?.wid?.user ? `+${String(info.wid.user)}` : null;
-    waPushname = info?.pushname || null;
-    if (connected && client?.info) {
-      const list = await client.getChats();
-      const slice = list.slice(0, 200);
-      chats = slice.map(c => ({
-        id: c.id?._serialized,
-        isGroup: !!c.isGroup,
-        unread: Number(c.unreadCount || 0) || 0,
-        timestamp: Number(c.timestamp || 0) || 0,
-        lastFromMe: !!c.lastMessage?.fromMe
-      })).filter(x => x.id && !x.isGroup);
-    }
-  } catch {}
+  if (!WA_USE_WWEBJS) {
+    waNumber = metaAcc?.displayPhoneNumber || null;
+    waPushname = metaAcc?.verifiedName || null;
+    try {
+      const events = db.load('meta_webhook_events', []);
+      const list = Array.isArray(events) ? events : [];
+      const map = new Map();
+      for (const ev of list) {
+        if (String(ev?.sessionId || '') !== String(sid)) continue;
+        const kind = (ev?.kind || '').toString();
+        if (kind !== 'message' && kind !== 'outgoing') continue;
+        const waId = (ev?.waId || '').toString();
+        if (!waId || waId.includes('@g.us')) continue;
+        const tsSec = Math.floor((Number(ev?.ts || 0) || Date.now()) / 1000);
+        const cur = map.get(waId) || { id: waId, isGroup: false, unread: 0, timestamp: 0, lastFromMe: false };
+        if (!cur.timestamp || tsSec >= cur.timestamp) {
+          cur.timestamp = tsSec;
+          cur.lastFromMe = kind === 'outgoing';
+        }
+        map.set(waId, cur);
+      }
+      chats = Array.from(map.values()).sort((a, b) => (Number(b?.timestamp || 0) || 0) - (Number(a?.timestamp || 0) || 0)).slice(0, 200);
+    } catch {}
+  } else {
+    try {
+      const client = waClients.get(sid);
+      const info = client?.info || null;
+      waNumber = info?.wid?.user ? `+${String(info.wid.user)}` : null;
+      waPushname = info?.pushname || null;
+      if (connected && client?.info) {
+        const list = await client.getChats();
+        const slice = list.slice(0, 200);
+        chats = slice.map(c => ({
+          id: c.id?._serialized,
+          isGroup: !!c.isGroup,
+          unread: Number(c.unreadCount || 0) || 0,
+          timestamp: Number(c.timestamp || 0) || 0,
+          lastFromMe: !!c.lastMessage?.fromMe
+        })).filter(x => x.id && !x.isGroup);
+      }
+    } catch {}
+  }
 
   const nowSec = Math.floor(Date.now() / 1000);
   const dayKeyNow = dayKeyFromTs(nowSec);
@@ -2095,22 +2315,35 @@ route('GET', '/api/dashboard/overview/:sessionId', async (req, res) => {
   const out24 = last24h.filter(c => c.lastFromMe).length;
   responseRate = (in24 + out24) ? Math.round((out24 / (in24 + out24)) * 100) : 0;
 
-  try {
-    const ranked = chats.slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 60);
-    let count = 0;
-    for (const c of ranked) {
-      const hist = getHistory(sid, c.id);
-      const items = Array.isArray(hist) ? hist : [];
-      for (let i = items.length - 1; i >= 0 && count < 5000; i--) {
-        const m = items[i];
-        if (!m) continue;
-        if (dayKeyFromTs(m.timestamp || 0) !== dayKeyNow) break;
-        if (!m.fromMe) messagesToday += 1;
-        count += 1;
+  if (!WA_USE_WWEBJS) {
+    try {
+      const events = db.load('meta_webhook_events', []);
+      const list = Array.isArray(events) ? events : [];
+      for (const ev of list) {
+        if (String(ev?.sessionId || '') !== String(sid)) continue;
+        if (String(ev?.kind || '') !== 'message') continue;
+        const tsSec = Math.floor((Number(ev?.ts || 0) || Date.now()) / 1000);
+        if (dayKeyFromTs(tsSec) === dayKeyNow) messagesToday += 1;
       }
-      if (count >= 5000) break;
-    }
-  } catch {}
+    } catch {}
+  } else {
+    try {
+      const ranked = chats.slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 60);
+      let count = 0;
+      for (const c of ranked) {
+        const hist = getHistory(sid, c.id);
+        const items = Array.isArray(hist) ? hist : [];
+        for (let i = items.length - 1; i >= 0 && count < 5000; i--) {
+          const m = items[i];
+          if (!m) continue;
+          if (dayKeyFromTs(m.timestamp || 0) !== dayKeyNow) break;
+          if (!m.fromMe) messagesToday += 1;
+          count += 1;
+        }
+        if (count >= 5000) break;
+      }
+    } catch {}
+  }
 
   const campaigns = db.load('winback_campaigns', []).filter(c => String(c?.sessionId || '') === String(sid) && (c.type || '') !== 'draft');
   const winbackActive = campaigns.filter(c => !!c.active);
@@ -2289,7 +2522,12 @@ route('GET', '/api/active-sessions', (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
   const all = db.load('sessions');
   const sessions = u.role === 'admin' ? all : all.filter(s => s.userId === u.id);
-  json(res, sessions.map(s => ({ ...s, status: WA_USE_WWEBJS ? (waStatus.get(s.id) || s.status || 'disconnected') : 'meta' })));
+  json(res, sessions.map(s => {
+    if (WA_USE_WWEBJS) return { ...s, status: waStatus.get(s.id) || s.status || 'disconnected' };
+    const meta = getMetaAccountForSession(s.id);
+    const connected = !!meta?.phoneNumberId;
+    return { ...s, status: connected ? 'connected' : 'meta', provider: 'meta', number: meta?.displayPhoneNumber || s?.number || '' };
+  }));
 });
 
 route('POST', '/api/create-session', async (req, res) => {
@@ -2328,7 +2566,11 @@ route('GET', '/api/whatsapp/qr/:sessionId', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sid);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
-  if (!WA_USE_WWEBJS) return json(res, { status: 'meta', qr: '' });
+  if (!WA_USE_WWEBJS) {
+    const meta = getMetaAccountForSession(sid);
+    const connected = !!meta?.phoneNumberId;
+    return json(res, { status: connected ? 'connected' : 'meta', connected, provider: 'meta', qr: '' });
+  }
   json(res, { status: waStatus.get(sid) || 'disconnected', qr: waLastQr.get(sid)?.qr || '' });
 });
 
@@ -2375,7 +2617,11 @@ route('GET', '/api/whatsapp/status/:sessionId', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === req.params.sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
-  if (!WA_USE_WWEBJS) return json(res, { status: 'meta', connected: false, provider: 'meta' });
+  if (!WA_USE_WWEBJS) {
+    const meta = getMetaAccountForSession(req.params.sessionId);
+    const connected = !!meta?.phoneNumberId;
+    return json(res, { status: connected ? 'connected' : 'meta', connected, provider: 'meta' });
+  }
   const status = waStatus.get(req.params.sessionId) || s.status || 'disconnected';
   json(res, { status, connected: status === 'connected' });
 });
@@ -2389,6 +2635,12 @@ route('GET', '/api/whatsapp/resolve', async (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) {
+    const digits = digitsOnly(numberRaw);
+    if (!digits || digits.length < 8) return err(res, 'Número inválido', 400);
+    const waId = `${digits}@c.us`;
+    return json(res, { ok: true, sessionId, number: digits, waId, registered: null });
+  }
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected', 400);
   const digits = digitsOnly(numberRaw);
@@ -2411,6 +2663,19 @@ route('GET', '/api/whatsapp/self/:sessionId', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === req.params.sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) {
+    const meta = getMetaAccountForSession(req.params.sessionId);
+    const connected = !!meta?.phoneNumberId;
+    return json(res, {
+      connected,
+      provider: 'meta',
+      wid: meta?.phoneNumberId || null,
+      number: meta?.displayPhoneNumber || s?.number || null,
+      pushname: meta?.verifiedName || null,
+      wabaId: meta?.wabaId || null,
+      phoneNumberId: meta?.phoneNumberId || null
+    });
+  }
   const client = waClients.get(req.params.sessionId);
   const info = client?.info || null;
   const connected = !!info;
@@ -2522,6 +2787,7 @@ route('GET', '/api/whatsapp/sync/status', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { ok: true, sessionId, running: false, updatedAt: null, total: 0, provider: 'meta' });
   const running = !!waSyncState.get(sessionId)?.running;
   const index = getChatIndex(sessionId);
   json(res, { ok: true, sessionId, running, updatedAt: index.updatedAt, total: index.chats.length });
@@ -2534,6 +2800,7 @@ route('POST', '/api/whatsapp/sync/start', async (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { ok: true, running: false, provider: 'meta' });
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected', 400);
   if (waSyncState.get(sessionId)?.running) return json(res, { ok: true, running: true });
@@ -2548,6 +2815,7 @@ route('POST', '/api/whatsapp/sync/cancel', (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) return json(res, { ok: true, provider: 'meta' });
   const st = waSyncState.get(sessionId);
   if (st) st.cancel = true;
   json(res, { ok: true });
@@ -2562,6 +2830,32 @@ route('GET', '/api/whatsapp/chats', async (req, res) => {
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return json(res, []);
   try {
+    if (!WA_USE_WWEBJS) {
+      const events = db.load('meta_webhook_events', []);
+      const list = Array.isArray(events) ? events : [];
+      const map = new Map();
+      for (const ev of list) {
+        if (ev?.kind !== 'message') continue;
+        if (String(ev?.sessionId || '') !== String(sessionId)) continue;
+        const waId = (ev?.waId || '').toString();
+        if (!waId) continue;
+        const cur = map.get(waId) || { id: waId, name: waId.split('@')[0] || 'U', number: waId.split('@')[0] || null, isGroup: false, unread: 0, timestamp: 0, lastMessage: null };
+        const tsSec = Math.floor((Number(ev?.ts || 0) || Date.now()) / 1000);
+        if (!cur.timestamp || tsSec >= cur.timestamp) {
+          cur.timestamp = tsSec;
+          cur.lastMessage = ev?.text ? { body: String(ev.text), fromMe: false } : cur.lastMessage;
+        }
+        map.set(waId, cur);
+      }
+      const result = Array.from(map.values())
+        .sort((a, b) => (Number(b?.timestamp || 0) || 0) - (Number(a?.timestamp || 0) || 0))
+        .slice(0, limit)
+        .map(c => ({
+          ...c,
+          pic: `https://ui-avatars.com/api/?name=${encodeURIComponent((c?.name || 'U').toString())}&background=128c7e&color=fff`
+        }));
+      return json(res, result);
+    }
     const index = getChatIndex(sessionId);
     const result = (index.chats || []).slice(0, limit).map(c => ({
       ...c,
@@ -2584,6 +2878,11 @@ route('GET', '/api/whatsapp/chat-info/:chatId', async (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
+  if (!WA_USE_WWEBJS) {
+    const m = String(chatId).match(/^(\d+)@/);
+    const number = m ? m[1] : null;
+    return json(res, { ok: true, id: chatId, isGroup: false, number, name: number ? `+${number}` : chatId, pushname: null });
+  }
   const client = waClients.get(sessionId);
   if (!client?.info) return err(res, 'Session not connected', 400);
 
@@ -2710,6 +3009,30 @@ route('GET', '/api/whatsapp/messages/:chatId', async (req, res) => {
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
 
+  if (!WA_USE_WWEBJS) {
+    const events = db.load('meta_webhook_events', []);
+    const list = Array.isArray(events) ? events : [];
+    const out = [];
+    for (const ev of list) {
+      const sid = String(ev?.sessionId || '');
+      if (sid !== String(sessionId)) continue;
+      const waId = (ev?.waId || '').toString();
+      if (!waId || String(waId).toLowerCase() !== String(chatId).toLowerCase()) continue;
+      const kind = (ev?.kind || '').toString();
+      if (kind !== 'message' && kind !== 'outgoing') continue;
+      const tsSec = Math.floor((Number(ev?.ts || 0) || Date.now()) / 1000);
+      out.push({
+        id: (ev?.messageId || ev?.id || `${kind}-${tsSec}-${out.length}`).toString(),
+        body: (ev?.text || '').toString(),
+        fromMe: kind === 'outgoing',
+        timestamp: tsSec,
+        type: 'text'
+      });
+    }
+    out.sort((a, b) => (Number(a?.timestamp || 0) || 0) - (Number(b?.timestamp || 0) || 0));
+    return json(res, out.slice(-200));
+  }
+
   const client = waClients.get(sessionId);
   if (!client?.info) return json(res, []);
 
@@ -2835,12 +3158,82 @@ route('POST', '/api/whatsapp/send', async (req, res) => {
   const sessions = db.load('sessions');
   const s = sessions.find(x => x.id === sessionId);
   if (!s || (s.userId !== u.id && !isAdminRole(u))) return err(res, 'Forbidden', 403);
-  const client = waClients.get(sessionId);
-  if (!client?.info) return err(res, 'Session not connected');
   const toStr = (to || '').toString().trim();
   const digits = digitsOnly(toStr);
   const toNorm = toStr.includes('@') ? toStr : (digits ? `${digits}@c.us` : toStr);
   if (!toNorm.includes('@')) return err(res, 'Destino inválido', 400);
+  if (!WA_USE_WWEBJS) {
+    const meta = getMetaAccountForSession(sessionId);
+    const phoneNumberId = (meta?.phoneNumberId || '').toString();
+    if (!phoneNumberId) return err(res, 'Meta API não conectada nesta sessão', 400);
+    if (!WA_META_TOKEN) return err(res, 'WA_META_TOKEN não configurado no servidor', 500);
+    if (!digits || digits.length < 8) return err(res, 'Destino inválido', 400);
+    const body = (message || '').toString();
+    if (!body.trim()) return err(res, 'Mensagem vazia', 400);
+
+    try {
+      const url = `https://graph.facebook.com/${META_API_VERSION}/${encodeURIComponent(phoneNumberId)}/messages`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${WA_META_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: digits, type: 'text', text: { body } })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return err(res, j?.error?.message || 'Falha ao enviar pela Meta API', 400);
+      const msgId = (j?.messages?.[0]?.id || '').toString() || null;
+
+      let createdLocal = false;
+      try {
+        const waId = `${digits}@c.us`;
+        const contacts = db.load('contacts', []);
+        const existing = contacts.find(c => String(c?.sessionId || '') === String(sessionId) && String((c?.waId || c?.id || '')).toLowerCase() === String(waId).toLowerCase()) || null;
+        if (!existing) {
+          contacts.push({
+            id: waId,
+            waId,
+            sessionId,
+            userId: s.userId,
+            name: '',
+            number: digits || null,
+            email: '',
+            note: '',
+            source: 'meta',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          db.save('contacts', contacts);
+          createdLocal = true;
+        }
+      } catch {}
+      try {
+        const prefs = getUserPrefs(u.id);
+        const tokenItem = getGoogleTokenItem(u.id);
+        if (createdLocal && prefs.googleAutoSaveContacts && tokenItem?.access_token) {
+          await googleCreateOrUpdateContact(u.id, { number: digits || null, name: '', email: '' });
+        }
+      } catch {}
+
+      appendMetaWebhookEvent({
+        kind: 'outgoing',
+        sessionId: String(sessionId),
+        phoneNumberId,
+        messageId: msgId,
+        to: digits,
+        waId: `${digits}@c.us`,
+        type: 'text',
+        text: body,
+        ts: Date.now(),
+        createdAt: new Date().toISOString()
+      });
+      appendActivity(sessionId, u.id, 'meta.send', 'Mensagem enviada (Meta API)', { to: `${digits}@c.us`, hasText: true });
+      return json(res, { ok: true, to: `${digits}@c.us`, messageId: msgId });
+    } catch (e) {
+      return err(res, e?.message || 'Falha ao enviar pela Meta API', 500);
+    }
+  }
+
+  const client = waClients.get(sessionId);
+  if (!client?.info) return err(res, 'Session not connected');
   try {
     if (toNorm.endsWith('@c.us') && typeof client.isRegisteredUser === 'function') {
       const ok = await client.isRegisteredUser(toNorm);
@@ -2889,6 +3282,7 @@ route('POST', '/api/whatsapp/send', async (req, res) => {
 
 route('POST', '/api/whatsapp/send-media', async (req, res) => {
   const u = requireAuth(req, res); if (!u) return;
+  if (!WA_USE_WWEBJS) return err(res, 'Envio de mídia não suportado no modo Meta', 400);
   const ct = (req.headers['content-type'] || '').toLowerCase();
   if (!ct.includes('multipart/form-data')) return err(res, 'Invalid content type', 400);
   try {

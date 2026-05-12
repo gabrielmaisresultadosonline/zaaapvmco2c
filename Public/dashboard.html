@@ -2103,6 +2103,28 @@
         Esta versão usa a API Oficial (Cloud API). Não usamos mais QR Code.
       </div>
       <div class="contact-field" style="margin-top:0;">
+        <label>Status</label>
+        <div class="value" id="metaConnectStatus">-</div>
+      </div>
+      <div class="contact-field">
+        <label>Phone Number ID</label>
+        <div class="value" id="metaPhoneNumberId" style="word-break:break-all;">-</div>
+      </div>
+      <div class="contact-field">
+        <label>WABA ID</label>
+        <div class="value" id="metaWabaId" style="word-break:break-all;">-</div>
+      </div>
+      <div style="display:flex; gap:10px; margin-top: 12px; flex-wrap:wrap;">
+        <button class="btn-primary-c" style="flex:1; justify-content:center; min-width: 220px;" onclick="startMetaEmbeddedSignup()">
+          <i class="fab fa-facebook" style="margin-right: 8px;"></i> Conectar via Facebook (Embedded Signup)
+        </button>
+        <button class="btn-secondary-c" style="flex:1; justify-content:center; min-width: 220px;" onclick="openMetaOnboardingUrl()">Abrir Onboarding</button>
+      </div>
+      <div class="text-muted" id="metaConnectHint" style="font-size:0.8rem; margin-top: 8px; line-height:1.35;">
+        Dica: após concluir o onboarding, volte aqui. O sistema detecta automaticamente o WABA e o Phone Number.
+      </div>
+      <div style="height:12px;"></div>
+      <div class="contact-field" style="margin-top:0;">
         <label>Callback URL</label>
         <div class="value" id="metaCallbackUrl" style="word-break:break-all;">-</div>
       </div>
@@ -2744,18 +2766,159 @@
       }
     }
 
+    const META_EMBED = {
+      config: null,
+      accessToken: '',
+      popup: null,
+      poll: null,
+      sdkReady: false,
+      sdkPromise: null
+    };
+
+    function ensureFacebookSdk() {
+      if (META_EMBED.sdkPromise) return META_EMBED.sdkPromise;
+      META_EMBED.sdkPromise = new Promise((resolve, reject) => {
+        if (window.FB && META_EMBED.sdkReady) return resolve(true);
+        window.fbAsyncInit = function() {
+          try {
+            FB.init({
+              appId: '1296667748608099',
+              autoLogAppEvents: true,
+              xfbml: false,
+              version: 'v25.0'
+            });
+            META_EMBED.sdkReady = true;
+            resolve(true);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        const s = document.createElement('script');
+        s.async = true;
+        s.defer = true;
+        s.crossOrigin = 'anonymous';
+        s.src = 'https://connect.facebook.net/en_US/sdk.js';
+        s.onerror = () => reject(new Error('Falha ao carregar Facebook SDK'));
+        document.head.appendChild(s);
+      });
+      return META_EMBED.sdkPromise;
+    }
+
+    function setMetaConnectUiStatus(text) {
+      const el = document.getElementById('metaConnectStatus');
+      if (el) el.textContent = (text || '-').toString();
+    }
+
+    async function loadMetaEmbeddedConfig() {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/meta/embedded-signup/config', { headers: { 'Authorization': `Bearer ${token}` } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || 'Falha ao carregar config Meta');
+      META_EMBED.config = data;
+      const cb = document.getElementById('metaCallbackUrl');
+      if (cb) cb.textContent = data.webhookUrl || `${location.origin}/api/meta/webhook`;
+      const vt = document.getElementById('metaVerifyToken');
+      if (vt) vt.textContent = data.verifyToken || 'ZAPMRO_META_VERIFY_2025';
+      return data;
+    }
+
+    async function refreshMetaConnectState() {
+      if (!currentSessionId) await ensureSelectedSession();
+      try { await loadMetaEmbeddedConfig(); } catch {}
+      try {
+        if (!currentSessionId) return;
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/meta/self/${encodeURIComponent(currentSessionId)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        const connected = !!data?.connected;
+        setMetaConnectUiStatus(connected ? 'Conectado' : 'Desconectado');
+        const pn = document.getElementById('metaPhoneNumberId');
+        const wb = document.getElementById('metaWabaId');
+        if (pn) pn.textContent = data?.phoneNumberId || '-';
+        if (wb) wb.textContent = data?.wabaId || '-';
+      } catch {
+        setMetaConnectUiStatus('Erro');
+      }
+    }
+
     function openMetaConnectModal() {
       const modal = document.getElementById('metaConnectModal');
       if (!modal) return;
-      const cb = document.getElementById('metaCallbackUrl');
-      if (cb) cb.textContent = `${location.origin}/api/meta/webhook`;
       modal.style.display = 'block';
+      setMetaConnectUiStatus('Carregando...');
+      refreshMetaConnectState();
     }
 
     function closeMetaConnectModal() {
       const modal = document.getElementById('metaConnectModal');
       if (!modal) return;
       modal.style.display = 'none';
+    }
+
+    function openMetaOnboardingUrl() {
+      (async () => {
+        try {
+          if (!META_EMBED.config) await loadMetaEmbeddedConfig();
+          const url = META_EMBED?.config?.onboardingUrl;
+          if (!url) return;
+          try { window.open(url, '_blank'); } catch {}
+        } catch {}
+      })();
+    }
+
+    async function startMetaEmbeddedSignup() {
+      if (!currentSessionId) await ensureSelectedSession();
+      if (!currentSessionId) return alert('Selecione uma sessão primeiro.');
+      try {
+        setMetaConnectUiStatus('Preparando...');
+        if (!META_EMBED.config) await loadMetaEmbeddedConfig();
+        await ensureFacebookSdk();
+        setMetaConnectUiStatus('Abrindo Facebook...');
+        FB.login(function(response) {
+          const auth = response?.authResponse || null;
+          if (!auth?.accessToken) {
+            setMetaConnectUiStatus('Login cancelado');
+            return;
+          }
+          META_EMBED.accessToken = auth.accessToken;
+          const url = META_EMBED?.config?.onboardingUrl;
+          if (!url) { setMetaConnectUiStatus('Onboarding indisponível'); return; }
+          try {
+            META_EMBED.popup = window.open(url, 'zapmro_meta_onboard', 'width=1100,height=760');
+          } catch {
+            META_EMBED.popup = null;
+          }
+          setMetaConnectUiStatus('Conclua o onboarding e feche a janela');
+          if (META_EMBED.poll) { try { clearInterval(META_EMBED.poll); } catch {} }
+          META_EMBED.poll = setInterval(async () => {
+            try {
+              if (META_EMBED.popup && !META_EMBED.popup.closed) return;
+              clearInterval(META_EMBED.poll);
+              META_EMBED.poll = null;
+              setMetaConnectUiStatus('Finalizando...');
+              const token = localStorage.getItem('token');
+              const r = await fetch('/api/meta/embedded-signup/finalize', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: currentSessionId, accessToken: META_EMBED.accessToken })
+              });
+              const data = await r.json().catch(() => ({}));
+              if (!r.ok || !data?.ok) {
+                setMetaConnectUiStatus(data?.error || 'Falha ao finalizar');
+                return;
+              }
+              setMetaConnectUiStatus('Conectado');
+              await refreshMetaConnectState();
+              await updateStatusBadge();
+              try { await loadSettingsWhatsAppStatus(); } catch {}
+            } catch {
+              setMetaConnectUiStatus('Falha ao finalizar');
+            }
+          }, 1200);
+        }, { scope: 'public_profile,email,business_management,whatsapp_business_management', return_scopes: true });
+      } catch {
+        setMetaConnectUiStatus('Falha ao iniciar');
+      }
     }
 
     function openMetaWebhookInfo() {
