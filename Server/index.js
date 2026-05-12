@@ -1462,10 +1462,14 @@ function oauthRedirectLandingHtml(provider) {
 route('GET', '/oauth.php', (req, res) => {
   html(res, oauthRedirectLandingHtml('facebook'));
 });
+route('GET', '/br/oauth.php', routes.GET['/oauth.php']);
+route('GET', '/br/oauth.php/', routes.GET['/oauth.php']);
 route('GET', '/auth/facebook/callback', (req, res) => {
   html(res, oauthRedirectLandingHtml('facebook'));
 });
 route('GET', '/auth/facebook/callback/', routes.GET['/auth/facebook/callback']);
+route('GET', '/br/auth/facebook/callback', routes.GET['/auth/facebook/callback']);
+route('GET', '/br/auth/facebook/callback/', routes.GET['/auth/facebook/callback']);
 
 // ── Auth ─────────────────────────────────────────────────────────────
 route('POST', '/api/auth/register', async (req, res) => {
